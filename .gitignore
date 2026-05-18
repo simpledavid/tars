@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+._*
+
+# Swift / SwiftPM
+.build/
+.swiftpm/
+
+# Xcode 用户级 / 自动生成
+xcuserdata/
+*.xcuserstate
+DerivedData/
+
+# 构建产物（不提交 —— 别人 clone 后自己跑 install.sh / make-dmg.sh 生成）
+HermesPet.app/
+dist/
+
+# opencode 二进制下载缓存（build.sh 首次构建时自动 curl 下载，~33MB zip + ~102MB 解压）
+.opencode-cache/
+
+# 备份与中间快照（保留本地，不提交）
+*.bak
+*.original
+
+# 个人 / 工具配置
+.claude/
+.cursor/
+.vscode/
+.idea/
+
+# 日志 / 临时
+*.log
+*.tmp
