@@ -299,6 +299,9 @@ final class CodexClient: @unchecked Sendable {
                     // - item.completed 且 item.type == "agent_message"  → assistant 文本
                     // - item.started / item.completed 且 item.type != "agent_message"  → 工具事件
                     //   （Codex 常见 item.type: command_execution / file_change / web_search ...）
+                    if type == "turn.started", let conversationID {
+                        DispatchQueue.main.async { AgentActivityStore.postPhase(.thinking, conversationID: conversationID) }
+                    }
                     if type == "thread.started",
                        let conversationID,
                        let threadID = json["thread_id"] as? String,
@@ -343,7 +346,8 @@ final class CodexClient: @unchecked Sendable {
                                             "id": toolId,
                                             "name": itemType,
                                             "arg": arg,
-                                            "file_path": filePath
+                                            "file_path": filePath,
+                                            "conversationID": conversationID ?? ""
                                         ]
                                     )
                                 }
@@ -361,11 +365,12 @@ final class CodexClient: @unchecked Sendable {
                            !state.endedToolIds.contains(toolId) {
                             state.endedToolIds.insert(toolId)
                             if !suppressIslandUpdates {
+                                let toolFailed = item["status"] as? String == "failed"
                                 DispatchQueue.main.async {
                                     NotificationCenter.default.post(
                                         name: .init("HermesPetToolEnded"),
                                         object: nil,
-                                        userInfo: ["id": toolId]
+                                        userInfo: ["id": toolId, "conversationID": conversationID ?? "", "failed": toolFailed]
                                     )
                                 }
                             }

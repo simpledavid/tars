@@ -224,14 +224,14 @@ eta 是可选的预估时长（"30m" / "1h" / "5m"）。**只在确实是任务�
     }
 
     /// 流式问答 —— 把整个对话历史作为 prompt 一次性传给 Claude
-    func streamCompletion(messages: [ChatMessage], workingDirectory: String? = nil) -> AsyncThrowingStream<String, Error> {
+    func streamCompletion(messages: [ChatMessage], workingDirectory: String? = nil, conversationID: String? = nil) -> AsyncThrowingStream<String, Error> {
         let prompt = buildPrompt(messages: messages)
         let extraDirs = collectExtraAddDirs(from: messages)
-        return streamRaw(prompt: prompt, extraAddDirs: extraDirs, workingDirectory: workingDirectory)
+        return streamRaw(prompt: prompt, extraAddDirs: extraDirs, workingDirectory: workingDirectory, conversationID: conversationID)
     }
 
     /// 底层 spawn claude -p prompt 的流式实现
-    private func streamRaw(prompt: String, extraAddDirs: [String] = [], workingDirectory: String? = nil) -> AsyncThrowingStream<String, Error> {
+    private func streamRaw(prompt: String, extraAddDirs: [String] = [], workingDirectory: String? = nil, conversationID: String? = nil) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let process = Process()
             process.executableURL = URL(fileURLWithPath: executablePath)
@@ -302,7 +302,10 @@ eta 是可选的预估时长（"30m" / "1h" / "5m"）。**只在确实是任务�
                     else { continue }
 
                     switch type {
+                    case "system":
+                        DispatchQueue.main.async { if let conversationID { AgentActivityStore.postPhase(.thinking, conversationID: conversationID) } }
                     case "assistant":
+                        DispatchQueue.main.async { if let conversationID { AgentActivityStore.postPhase(.thinking, conversationID: conversationID) } }
                         guard let message = json["message"] as? [String: Any],
                               let messageId = message["id"] as? String,
                               let content = message["content"] as? [[String: Any]]
@@ -349,7 +352,8 @@ eta 是可选的预估时长（"30m" / "1h" / "5m"）。**只在确实是任务�
                                     "id": toolId,
                                     "name": toolName,
                                     "arg": argSummary,
-                                    "file_path": filePath
+                                    "file_path": filePath,
+                                    "conversationID": conversationID ?? ""
                                 ]
                                 DispatchQueue.main.async {
                                     NotificationCenter.default.post(
@@ -375,11 +379,12 @@ eta 是可选的预估时长（"30m" / "1h" / "5m"）。**只在确实是任务�
                             if state.startedToolIds.contains(toolUseId),
                                !state.endedToolIds.contains(toolUseId) {
                                 state.endedToolIds.insert(toolUseId)
+                                let toolFailed = item["is_error"] as? Bool ?? false
                                 DispatchQueue.main.async {
                                     NotificationCenter.default.post(
                                         name: .init("HermesPetToolEnded"),
                                         object: nil,
-                                        userInfo: ["id": toolUseId]
+                                        userInfo: ["id": toolUseId, "conversationID": conversationID ?? "", "failed": toolFailed]
                                     )
                                 }
                             }

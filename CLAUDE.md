@@ -8,16 +8,17 @@ Swift 6 + SwiftUI，支持 macOS 14+，SwiftPM 构建。Tars 常驻 MacBook 顶�
 
 | AgentMode | 用户名称 | 实现 |
 |---|---|---|
-| `.directAPI` | AI 助手 | OpenAI Agents API / 本地 opencode |
+| `.directAPI` | AI 助手 | ChatGPT 订阅 / 本地 opencode |
 | `.claudeCode` | Claude Code | spawn `claude -p` |
 | `.codex` | Codex | spawn `codex exec -i` |
 
-AI 助手可选择 OpenAI Agents API（Beta）和 opencode。Agents API 使用独立的应用密钥、执行环境密钥和本机 `codex exec-server`；opencode 使用服务商模型与 API Key。Claude Code / Codex CLI 的入口和配置位于高级设置。旧版 Hermes / OpenClaw / none 选择迁移到 opencode。
+AI 助手可选择 ChatGPT 订阅和 opencode。ChatGPT 订阅使用 Tars 自己的官方 OAuth 授权和本机 `codex app-server`，凭据存钥匙串；共享 Plus / Pro 订阅额度，不读取已有 Codex 登录，不回退到 API 计费。账号、模型和工作目录按对话绑定，线程映射为 `~/.hermespet/agents/chatgpt-threads.json`（0600）。opencode 使用服务商模型与 API Key。Claude Code / Codex CLI 的入口和配置位于高级设置。旧版 Hermes / OpenClaw / none 选择迁移到 opencode；已移除的 Agents API 选择迁移到 ChatGPT 订阅，保留本机聊天历史，续聊需要订阅授权。
 
-驱动配置写入 `~/.hermespet/agents/model-driver.json`，权限为目录 0700、文件 0600。Agents API 密钥存系统钥匙串；会话绑定存 `~/.hermespet/agents/openai-sessions.json`（0600）。每个对话锁定引擎，会话绑定含未确认请求标记，禁止自动重放不确定输入。
+驱动配置写入 `~/.hermespet/agents/model-driver.json`，权限为目录 0700、文件 0600。ChatGPT 订阅凭据存系统钥匙串。每个对话锁定引擎，会话绑定含未确认请求标记，禁止自动重放不确定输入。
 
 ## 品牌与兼容层
 
+- 项目目录和 GitHub 仓库名统一为 `tars`：`https://github.com/simpledavid/tars`。
 - 用户可见产品名、安装包名、窗口标题统一为 **Tars**。
 - SwiftPM executable target、可执行文件、bundle ID、通知名和旧数据目录暂时保留 `HermesPet` / `com.nousresearch.hermespet`。
 - 这些内部旧名用于保持升级兼容、TCC 权限、历史对话和工具 hook，不应再出现在用户文案中。
@@ -36,7 +37,7 @@ AI 助手可选择 OpenAI Agents API（Beta）和 opencode。Agents API 使用�
 - 核心：`HermesPetApp`、`ChatViewModel`、`ChatView`、`ChatWindowController`、`Models`
 - 聊天 UI：`ChatComponents`、`MarkdownRenderer`、`ChatFontScale`
 - 刘海与桌宠：`DynamicIslandController`、`TarsWalkOverlay`、`ModeSprite`、`PetHeaderStrip`
-- Agent：`APIClient`、`ClaudeCodeClient`、`CodexClient`、`OpenCodeServerManager`、`OpenCodeHTTPClient`、`AgentHarness`、`AgentsAPIClient`、`AgentsExecutorManager`
+- Agent：`APIClient`、`ClaudeCodeClient`、`CodexClient`、`OpenCodeServerManager`、`OpenCodeHTTPClient`、`AgentHarness`、`ChatGPTPlanAuth`、`ChatGPTPlanClient`、`ChatGPTLoginCallback`
 - 权限：`PermissionWindowController`、`PermissionHookServer`、`PermissionHookInstaller`
 - 系统：`UpdateChecker`、`CrashReporter`、`StorageManager`、`SchemaMigrator`
 

@@ -26,9 +26,9 @@ enum ToolKind: Equatable {
         case "Write", "Edit", "MultiEdit", "NotebookEdit": return .write
         case "Bash", "BashOutput", "KillBash", "KillShell": return .bash
         case "Grep", "Glob":      return .search
-        case "WebFetch", "WebSearch": return .web
+        case "WebFetch", "WebSearch", "webSearch", "web_search": return .web
         case "TodoWrite":         return .todo
-        case "Task":              return .task
+        case "Task", "collabAgentToolCall", "collab_agent_tool_call":              return .task
         default:
             // 兜底：按工具名关键字模糊匹配，覆盖 Codex 的 command_execution / file_change 等命名
             let lower = toolName.lowercased()

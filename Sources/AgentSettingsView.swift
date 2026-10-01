@@ -20,9 +20,9 @@ struct AgentSettingsView: View {
                 capability("Harness", icon: "cpu", detail: "统一请求、排队、取消与会话清理")
                 capability("Environment", icon: "folder", detail: "本机目录 · 按对话隔离运行状态")
                 capability("Memory & context", icon: "brain", detail: draft.memoryEnabled ? "使用你保存的偏好" : "记忆已关闭")
-                capability("MCP, tools & skills", icon: "wrench.and.screwdriver", detail: "Agents API / opencode 原生工具与 MCP")
+                capability("MCP, tools & skills", icon: "wrench.and.screwdriver", detail: "ChatGPT 订阅 / opencode 原生工具与 MCP")
                 capability("Compaction", icon: "line.3.horizontal.decrease", detail: draft.compactionEnabled ? "早期摘录 + 完整本地归档" : "保留完整请求历史")
-                capability("Multi-agent", icon: "person.2", detail: draft.multiAgentEnabled ? "Agents API / opencode 子任务协作" : "子任务协作已关闭")
+                capability("Multi-agent", icon: "person.2", detail: draft.multiAgentEnabled ? "ChatGPT 订阅 / opencode 子任务协作" : "子任务协作已关闭")
             }
             .padding(12)
             .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
@@ -50,12 +50,12 @@ struct AgentSettingsView: View {
                     Text("24,000").tag(24_000)
                     Text("48,000").tag(48_000)
                 }.disabled(!draft.compactionEnabled)
-                Text("超过预算时保留最近对话和早期原文摘录；完整记录保存在本机，可按路径继续读取。字符预算不是模型的 token 上限。Agents API 在云端自动管理上下文压缩，此开关不关闭云端压缩。")
+                Text("超过预算时保留最近对话和早期原文摘录；完整记录保存在本机，可按路径继续读取。字符预算不是模型的 token 上限。ChatGPT 订阅会话的上下文由本机 Codex 管理。")
                     .font(.caption2).foregroundStyle(.secondary)
 
                 Divider()
                 Toggle("子任务协作", isOn: $draft.multiAgentEnabled)
-                Text("Agents API 启用原生多 Agent，最多并行 4 个子任务。opencode 使用研究与审查子 Agent，限制其编辑和 shell 权限。")
+                Text("ChatGPT 订阅使用 Codex 的子任务协作。opencode 使用研究与审查子 Agent，限制其编辑和 shell 权限。")
                     .font(.caption2).foregroundStyle(.secondary)
 
                 DisclosureGroup("MCP 服务器 · \(draft.mcpServers.count)") {
@@ -75,7 +75,7 @@ struct AgentSettingsView: View {
                         TextField("https://example.com/mcp", text: $serverURL).textFieldStyle(.roundedBorder)
                         Button("添加服务器", action: addServer)
                             .disabled(serverName.isEmpty || serverURL.isEmpty)
-                        Text("MCP 和子任务配置同时用于 Agents API 与 opencode。Agents API 从本机执行环境连接 MCP；Claude / Codex CLI 使用各自已有的工具配置。")
+                        Text("MCP 和子任务配置用于 ChatGPT 订阅与 opencode。Claude / Codex CLI 使用各自已有的工具配置。")
                             .font(.caption2).foregroundStyle(.secondary)
                     }.padding(.top, 6)
                 }

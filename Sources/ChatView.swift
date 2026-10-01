@@ -43,6 +43,15 @@ struct ChatView: View {
                 messagesView
             }
 
+            if let issue = viewModel.currentIssue, issue.isPersistent {
+                ChatIssueCard(issue: issue, busy: viewModel.checkingTaskIDs.contains(viewModel.activeConversationID),
+                              recoveryDisabled: viewModel.hasAgentWork && issue.recovery != .usage,
+                              onRecover: { viewModel.handleIssueRecovery() },
+                              onOpenDirectory: issue.recovery == .inspectTask ? { viewModel.openTaskDirectory() } : nil,
+                              onDismiss: { viewModel.dismissError() })
+                    .padding(.horizontal, 12).padding(.bottom, 8)
+            }
+
             // Input —— 自带 hairline 分割 + 渐变背景，不再需要 Divider
             ChatInputField(
                 text: $viewModel.inputText,
@@ -62,15 +71,15 @@ struct ChatView: View {
         }
         // 错误 toast 从顶部浮现，3.5s 自动消失，点 × 立即关
         .overlay(alignment: .top) {
-            if let err = viewModel.errorMessage {
-                ErrorToast(message: err) { viewModel.dismissError() }
+            if let issue = viewModel.currentIssue, !issue.isPersistent {
+                ErrorToast(message: issue.message) { viewModel.dismissError() }
                     .padding(.top, 56)             // 避开 header
                     .padding(.horizontal, 14)
                     .transition(.move(edge: .top).combined(with: .opacity))
                     .zIndex(100)
             }
         }
-        .animation(AnimTok.smooth, value: viewModel.errorMessage)
+        .animation(AnimTok.smooth, value: viewModel.currentIssue)
         // 字号 toast —— ⌘+/⌘-/⌘0 触发后 2s 自动消失
         .overlay(alignment: .top) {
             if let label = fontScaleToast {
@@ -295,7 +304,11 @@ struct ChatView: View {
     /// 新用户引导卡显示条件：AI 助手模式 + 没填 API Key（dmg 分发场景对方默认就在这个 mode）。
     /// 让对方第一次打开就知道"要去设置里选服务商 + 配置 Key 才能聊天"
     private var showOnboardingCard: Bool {
-        viewModel.agentMode == .directAPI && (viewModel.currentAssistantEngine == .opencode ? viewModel.directAPIKey.isEmpty : (try? AgentsCredentials.load()) == nil)
+        guard viewModel.agentMode == .directAPI else { return false }
+        switch viewModel.currentAssistantEngine {
+        case .opencode: return viewModel.directAPIKey.isEmpty
+        case .chatGPT: return !ChatGPTPlanAuth.shared.isConnected
+        }
     }
 
     private var suggestionItems: [(icon: String, text: String, prompt: String)] {
@@ -1089,7 +1102,7 @@ struct OnboardingCard: View {
                     Text("先配置 AI 助手再聊天")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.primary)
-                    Text("点这里打开设置 · OpenAI Agents API / opencode")
+                    Text("点这里打开设置 · ChatGPT 订阅 / opencode")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

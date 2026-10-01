@@ -20,6 +20,7 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
     /// permission 卡片走 PetStrip 还是走原灵动岛卡片。weak 避免循环引用：实际持有者是 AppDelegate
     static weak var shared: ChatWindowController?
 
+    private let viewModel: ChatViewModel
     private let window: NSWindow
 
     /// 上次触发显示时用的锚点（灵动岛胶囊或菜单栏按钮），用于 hide 时收回方向
@@ -32,7 +33,14 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
 
     var isVisible: Bool { window.isVisible }
 
+    func canPresentInlinePermission(conversationID: String?) -> Bool {
+        guard isVisible else { return false }
+        if let conversationID { return conversationID == viewModel.activeConversationID }
+        return viewModel.isLoading && viewModel.conversations.filter { $0.isStreaming }.count == 1
+    }
+
     init(viewModel: ChatViewModel) {
+        self.viewModel = viewModel
         let initialFrame = NSRect(origin: .zero, size: NSSize(width: 420, height: 580))
         let window = NSWindow(
             contentRect: initialFrame,

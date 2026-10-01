@@ -9,6 +9,12 @@ struct HermesPetApp: App {
         Settings {
             TarsSettingsScene(delegate: appDelegate)
         }
+        .commands {
+            CommandGroup(before: .windowArrangement) {
+                Button("显示聊天窗") { appDelegate.showChatWindow() }
+                Divider()
+            }
+        }
     }
 }
 
@@ -411,6 +417,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // 锚点优先用灵动岛胶囊（首次显示时定位用），其次菜单栏按钮
         let anchor: NSView? = islandController?.pillWindow.contentView ?? statusItem?.button
         chatWindow?.toggle(near: anchor)
+    }
+
+    func showChatWindow() {
+        guard chatWindow?.isVisible != true else { return }
+        let anchor: NSView? = islandController?.pillWindow.contentView ?? statusItem?.button
+        chatWindow?.show(near: anchor)
     }
 
     // MARK: - 语音输入（push-to-talk）

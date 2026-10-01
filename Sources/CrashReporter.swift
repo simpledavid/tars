@@ -26,7 +26,7 @@ final class CrashReporter {
     private(set) var isScanning = false
 
     private static let owner = "simpledavid"
-    private static let repo = "opencrab"
+    private static let repo = "tars"
 
     private init() {}
 

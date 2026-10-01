@@ -142,14 +142,19 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
                                                   modelID: modelID, directory: directory, configuration: config,
                                                   baseURL: baseURL, authHeader: authHeader)
             try Task.checkCancellation()
+            await MainActor.run {
+                AgentActivityStore.postPhase(.thinking, conversationID: conversationID)
+                NotificationCenter.default.post(name: .init("TarsModelSelected"), object: nil,
+                    userInfo: ["conversationID": conversationID, "model": "\(providerID)/\(promptModelID)"])
+            }
             let streamState = StreamState()
             let body: [String: Any] = [
                 "model": ["providerID": providerID, "modelID": promptModelID], "agent": "tars",
-                "parts": buildParts(userMsg: userMsg, text: Self.promptText(messages: messages, isNewSession: session.isNew))
+                "parts": buildParts(userMsg: userMsg, text: "[客户端请求配置：opencode，当前请求模型标识 \(providerID)/\(promptModelID)。被问到模型时依据该配置回答，不推测服务端内部路由。]\n" + Self.promptText(messages: messages, isNewSession: session.isNew))
             ]
             let bodyData = try JSONSerialization.data(withJSONObject: body)
             let sseTask = Task.detached { @Sendable [weak self] in
-                await self?.subscribeSSE(sessionID: session.id, baseURL: baseURL, authHeader: authHeader,
+                await self?.subscribeSSE(sessionID: session.id, conversationID: conversationID, baseURL: baseURL, authHeader: authHeader,
                                          streamState: streamState, continuation: continuation)
             }
             defer { sseTask.cancel() }
@@ -387,6 +392,7 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
     /// 订阅 server 的 SSE event 流，filter 出当前 sessionID 的 message.part.delta + 工具事件
     private func subscribeSSE(
         sessionID: String,
+        conversationID: String,
         baseURL: URL,
         authHeader: String,
         streamState: StreamState,
@@ -414,6 +420,7 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
                 handleSSEEvent(
                     event,
                     targetSessionID: sessionID,
+                    conversationID: conversationID,
                     streamState: streamState,
                     continuation: continuation
                 )
@@ -426,13 +433,17 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
     private func handleSSEEvent(
         _ event: [String: Any],
         targetSessionID: String,
+        conversationID: String,
         streamState: StreamState,
         continuation: AsyncThrowingStream<String, Error>.Continuation
     ) {
         guard let type = event["type"] as? String,
               let props = event["properties"] as? [String: Any] else { return }
         // 不是当前 session 的事件就丢
-        if let sid = props["sessionID"] as? String, sid != targetSessionID { return }
+        let eventSessionID = props["sessionID"] as? String
+            ?? (props["part"] as? [String: Any])?["sessionID"] as? String
+            ?? (props["info"] as? [String: Any])?["sessionID"] as? String
+        if let sid = eventSessionID, sid != targetSessionID { return }
 
         switch type {
         case "message.part.delta":
@@ -456,12 +467,12 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
                     streamState.markTextYielded()
                     continuation.yield(text)
                 }
-                handleToolPart(part)
+                handleToolPart(part, conversationID: conversationID)
             }
 
         case "permission.asked":
             // permission.asked event payload 的 properties 字段就是 PermissionRequest 本身
-            handlePermissionAsked(props)
+            handlePermissionAsked(props, conversationID: conversationID)
 
         case "permission.replied":
             // 服务端确认收到 reply（可能是我们自己 POST 的回执，也可能是其他 client）
@@ -478,7 +489,7 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
 
         case "question.asked":
             // AI 主动问问题（v1.3+ 新增）—— 卡片展示问题 + 选项让用户选
-            handleQuestionAsked(props)
+            handleQuestionAsked(props, conversationID: conversationID)
 
         case "question.replied", "question.rejected":
             if let requestID = props["requestID"] as? String {
@@ -496,7 +507,7 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
         }
     }
 
-    private func handleQuestionAsked(_ props: [String: Any]) {
+    private func handleQuestionAsked(_ props: [String: Any], conversationID: String) {
         rememberInteraction(props)
         guard let data = try? JSONSerialization.data(withJSONObject: props) else { return }
         guard let request = try? JSONDecoder().decode(QuestionRequest.self, from: data) else {
@@ -507,13 +518,13 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
             NotificationCenter.default.post(
                 name: .init("HermesPetQuestionAsked"),
                 object: nil,
-                userInfo: ["request": request]
+                userInfo: ["request": request, "conversationID": conversationID]
             )
         }
     }
 
     /// 把 SSE permission.asked event 的 properties 解析成 PermissionRequest 并广播给灵动岛
-    private func handlePermissionAsked(_ props: [String: Any]) {
+    private func handlePermissionAsked(_ props: [String: Any], conversationID: String) {
         rememberInteraction(props)
         // properties 字段就是完整 PermissionRequest schema 的 JSON
         // JSONSerialization → Data → JSONDecoder → PermissionRequest
@@ -527,7 +538,7 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
             NotificationCenter.default.post(
                 name: .init("HermesPetPermissionAsked"),
                 object: nil,
-                userInfo: ["request": request]
+                userInfo: ["request": request, "conversationID": conversationID]
             )
         }
     }
@@ -591,7 +602,7 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
         }
     }
 
-    private func handleToolPart(_ part: [String: Any]) {
+    private func handleToolPart(_ part: [String: Any], conversationID: String) {
         guard let partType = part["type"] as? String, partType == "tool",
               let tool = part["tool"] as? String,
               let state = part["state"] as? [String: Any] else { return }
@@ -609,16 +620,17 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
             return ""
         }()
         let mappedName = Self.mapToolName(tool)
+        let toolID = part["id"] as? String ?? part["callID"] as? String ?? "\(conversationID)-\(tool)"
 
         switch status {
         case "running", "started":
-            var info: [String: Any] = ["name": mappedName, "arg": argSummary]
+            var info: [String: Any] = ["id": toolID, "conversationID": conversationID, "name": mappedName, "arg": filePath ?? command ?? url ?? argSummary]
             if let fp = filePath, !fp.isEmpty { info["file_path"] = fp }
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .init("HermesPetToolStarted"), object: nil, userInfo: info)
             }
-        case "completed":
-            var info: [String: Any] = ["name": mappedName]
+        case "completed", "error":
+            var info: [String: Any] = ["id": toolID, "conversationID": conversationID, "name": mappedName, "failed": status == "error"]
             if let fp = filePath, !fp.isEmpty { info["file_path"] = fp }
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .init("HermesPetToolEnded"), object: nil, userInfo: info)

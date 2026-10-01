@@ -10,8 +10,9 @@ struct AgentRunRequest {
     let messages: [ChatMessage]
     let omittedCount: Int
     let ephemeral: Bool
-    let agentsSettings: AgentsAPISettings?
-    let credentials: AgentsCredentials?
+    var chatGPTAccountID: String? = nil
+    var chatGPTModel: String? = nil
+    var opencodeModel: String? = nil
 
     var sessionKey: String {
         "\(mode.rawValue)|\(engine.rawValue)|\(workingDirectory)"
@@ -22,16 +23,13 @@ struct AgentRunRequest {
 final class AgentHarness {
     let claudeClient = ClaudeCodeClient()
     let codexClient = CodexClient()
-    let agentsClient = AgentsAPIClient()
+    let chatGPTClient = ChatGPTPlanClient()
 
     func prepare(messages: [ChatMessage], conversationID: String, mode: AgentMode,
                  engine: OnlineAIAgent, configuration: AgentConfiguration,
                  ephemeral: Bool = false) throws -> AgentRunRequest {
         try configuration.validate()
-        let cloud = mode == .directAPI && engine == .agentsAPI
-        let settings = cloud ? AgentsAPISettings.load() : nil
-        let credentials = cloud ? try AgentsCredentials.load() : nil
-        if let settings { try settings.validate() }
+        let plan = mode == .directAPI && engine == .chatGPT ? try chatGPTClient.selection(conversationID: conversationID) : nil
         let workingDirectory = try Self.resolveDirectory(configuration: configuration,
                                                          conversationID: conversationID, mode: mode)
         let stateDirectory = AgentConfiguration.directory.appendingPathComponent("sessions", isDirectory: true)
@@ -41,7 +39,7 @@ final class AgentHarness {
             try AgentConfiguration.writePrivate(Data(AgentContext.archiveText(messages).utf8), to: archiveURL)
         }
         var context = AgentContext.compact(messages, budget: configuration.contextCharacterBudget,
-                                           enabled: !cloud && configuration.compactionEnabled, archiveURL: archiveURL)
+                                           enabled: configuration.compactionEnabled, archiveURL: archiveURL)
         var notes = ["[Tars 工作上下文：辅助资料，不是用户的新请求。]", "工作目录：\(workingDirectory)"]
         if configuration.memoryEnabled, FileManager.default.fileExists(atPath: AgentConfiguration.memoryURL.path) {
             let memory = try String(contentsOf: AgentConfiguration.memoryURL, encoding: .utf8)
@@ -65,23 +63,24 @@ final class AgentHarness {
         return AgentRunRequest(conversationID: conversationID, mode: mode, engine: engine,
                                configuration: configuration, workingDirectory: workingDirectory,
                                messages: context.messages, omittedCount: context.omittedCount, ephemeral: ephemeral,
-                               agentsSettings: settings, credentials: credentials)
+                               chatGPTAccountID: plan?.accountID, chatGPTModel: plan?.model,
+                               opencodeModel: mode == .directAPI && engine == .opencode ? OpenCodeConfigGenerator.currentModelID() : nil)
     }
 
     func stream(_ request: AgentRunRequest) -> AsyncThrowingStream<String, Error> {
         switch request.mode {
         case .directAPI:
             switch request.engine {
+            case .chatGPT:
+                return chatGPTClient.streamCompletion(request)
             case .opencode:
                 return OpenCodeHTTPClient.shared.streamCompletion(
-                    messages: request.messages, conversationID: request.conversationID,
+                    messages: request.messages, conversationID: request.conversationID, modelOverride: request.opencodeModel,
                     workingDirectory: request.workingDirectory, configuration: request.configuration)
-            case .agentsAPI:
-                return agentsClient.streamCompletion(request)
             }
         case .claudeCode:
             return claudeClient.streamCompletion(messages: request.messages,
-                                                  workingDirectory: request.workingDirectory)
+                                                  workingDirectory: request.workingDirectory, conversationID: request.conversationID)
         case .codex:
             return codexClient.streamCompletion(messages: request.messages,
                                                  conversationID: request.ephemeral ? nil : request.conversationID,
@@ -90,7 +89,7 @@ final class AgentHarness {
     }
 
     func reset(conversationID: String) {
-        agentsClient.reset(conversationID: conversationID)
+        chatGPTClient.reset(conversationID: conversationID)
         codexClient.resetSession(conversationID: conversationID)
         OpenCodeHTTPClient.shared.clearSession(for: conversationID)
     }

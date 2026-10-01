@@ -22,11 +22,13 @@ Tars 是一个 SwiftUI 原生 macOS 应用。点击刘海下方的胶囊呼出�
 
 - 最多 8 个独立对话，可并行流式执行
 - AI 助手、Claude Code、Codex 三种模式
-- OpenAI Agents API（Beta）：云端会话与调度，连接本机执行器
+- ChatGPT 订阅：使用 ChatGPT 登录，共享 Plus / Pro 额度，无需 API Key
 - 内嵌 opencode：支持 DeepSeek、Kimi、智谱、MiniMax、OpenAI 等服务商模型
 - Claude Code / Codex CLI 位于高级设置；旧版 Hermes / OpenClaw 选择自动迁移到 opencode
 - Markdown、GFM 表格、代码块、图片、文件路径附件和 Codex 生图
 - ScreenCaptureKit 截屏、按住说话、全局快问、桌面 Pin
+- 聊天状态条直接显示当前模型与账号信息；任务过程按对话隔离，点击可展开工具操作
+- 登录、额度与执行错误保留在当前对话，支持重新登录、检查连接与只读任务检查
 - 灵动岛展示连接状态、工具调用、执行步骤、文件修改和完成状态
 - TARS 桌面巡视、文件扫描和桌面图标探索
 
@@ -34,27 +36,27 @@ Tars 是一个 SwiftUI 原生 macOS 应用。点击刘海下方的胶囊呼出�
 
 | 模式 | 适合场景 | 准备工作 |
 |---|---|---|
-| **AI 助手** | 对话、写作、看图、本地 agent 工具 | 设置中选择 Agents API 或 opencode，并配置相应密钥 |
+| **AI 助手** | 对话、写作、看图、本地 agent 工具 | 设置中使用 ChatGPT 登录，或选择 opencode 并配置服务商密钥 |
 | **Claude Code** | 文件修改、命令执行、编程任务 | 本机 Claude 已登录 |
 | **Codex** | 编程任务、命令执行、生图 | 本机 Codex 已登录 |
 
-## OpenAI Agents API 接入
+## ChatGPT 订阅接入
 
-在设置 → AI 助手中选择 OpenAI Agents API，填写模型、应用密钥和专用执行环境密钥。密钥存系统钥匙串。应用密钥需要 `api.agents.read`、`api.agents.write`、`api.responses.write`；执行环境密钥只授予环境连接权限，且与应用密钥属于同一项目和账号。详见 [OpenAI 配置说明](https://developers.openai.com/api/docs/guides/agents-api/environments/self-hosted)。
+设置 → AI 助手 → **ChatGPT 订阅** → **使用 ChatGPT 登录**，在系统浏览器的 OpenAI 页面授权 Tars，再选择账号返回的模型；可展开「连接诊断」点击「验证订阅连接」。验证会调用一次模型，只有任务成功完成才显示验证通过。该入口采用 OpenAI 为开源/本机个人项目提供的 [Sign in with ChatGPT 订阅共享流程](https://developers.openai.com/siwc/token-sharing-open-source/sign-in)，使用公共 Responses API；无需 API Key，也不借用已有 Codex 登录凭据。
 
-本机需要支持 `codex exec-server` 的 Codex CLI。Tars 按对话启动执行器，使用 Agents API 原生会话、MCP、Skills 和多 Agent 配置；云端自动管理上下文压缩。Agent 能力设置中可选择工作目录、Skills 目录、记忆和 MCP。文档附件发送路径，图片以图像输入发送。
+登录网页出错时，可取消本次登录，展开「账号管理」选择「用 Safari 登录」发起新授权。浏览器的安全验证需要在浏览器中完成；本机回调等待 5 分钟，超时后需重新发起登录。
 
-先保存设置并检测连接，再点击「验证一次对话」完成真实联调（调用模型会产生 API 用量）。检测连接只验证应用接口和执行器版本，不能证明模型和环境密钥有效。未配置或未验证时可继续使用 opencode；现有用户的默认引擎不自动切换。
+本机需安装支持 app-server 的当前 [Codex CLI](https://developers.openai.com/codex/cli)。Tars 的授权凭据存系统钥匙串，支持多账号、PKCE、身份签名验证、刷新和退出撤销。每个对话绑定首次使用的账号、模型和工作目录，切换账号用于新对话；线程映射存 `~/.hermespet/agents/chatgpt-threads.json`（0600）。文本、图片、文档路径、本机命令、MCP、Skills 和 TARS 风格通过本机 app-server 执行。订阅共享不读取 ChatGPT 历史或记忆；当前预览不支持此入口的托管生图、语音接口和其他托管工具。高级 Codex 模式的生图是独立通道。
 
-每个对话绑定自己的引擎和会话。流关闭或 idle 事件不视为成功；任务完成需要确认根 Agent 的终态。断流时先查已保存的终态和输出，无法确认则请求取消并停止本机执行器，不重放输入。重启后保留未确认标记；仍不确定时需要清空该对话重建会话。浏览器授权等额外交互尚未接入，此时明确报错并取消。
+额度与 Codex / ChatGPT Work 共享，可在 ChatGPT 设置 → Usage 管理 Tars 的用量上限。额度错误会明确显示，不自动转入 API 计费。取消会请求中断任务；断线后读取保存的线程状态，不自动重放不确定输入。安装与协议测试不能替代用户授权后的真实请求验证。
 
 ## 快速开始
 
 需要 macOS 14+ 和完整 Xcode：
 
 ```bash
-git clone https://github.com/simpledavid/opencrab.git
-cd opencrab
+git clone https://github.com/simpledavid/tars.git
+cd tars
 ./install.sh
 ```
 

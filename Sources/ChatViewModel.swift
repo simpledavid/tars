@@ -39,13 +39,19 @@ final class ChatViewModel {
     }
     var errorMessage: String? {
         didSet {
-            // 每次设新错误时，3 秒后自动清空（用户也可以手动点 toast 上的 ×）
+            // 普通提示短暂展示；授权、额度和执行错误按对话保留。
             errorAutoDismissTask?.cancel()
             guard let msg = errorMessage, !msg.isEmpty else { return }
+            let issue = ChatIssue.classify(msg)
+            if issue.isPersistent, let index = conversations.firstIndex(where: { $0.id == activeConversationID }) {
+                conversations[index].issue = issue
+                storage.saveConversations(conversations)
+            }
             // 错误音 —— 只在出新错误时响，避免同样错误连续 set 重复轰炸
             if oldValue != msg {
                 SoundManager.play(.error)
             }
+            guard !issue.isPersistent else { return }
             errorAutoDismissTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 3_500_000_000)
                 if !Task.isCancelled, self?.errorMessage == msg {
@@ -59,7 +65,101 @@ final class ChatViewModel {
     func dismissError() {
         errorAutoDismissTask?.cancel()
         errorMessage = nil
+        if let index = conversations.firstIndex(where: { $0.id == activeConversationID }) {
+            conversations[index].issue = nil
+            storage.saveConversations(conversations)
+        }
     }
+    let activityStore = AgentActivityStore()
+    var checkingTaskIDs: Set<String> = []
+    var settingsDetail: String? = nil
+    var currentIssue: ChatIssue? {
+        conversations.first(where: { $0.id == activeConversationID })?.issue
+            ?? errorMessage.map { ChatIssue.classify($0) }
+    }
+    var currentActivity: AgentTaskActivity { activityStore.activity(for: activeConversationID) }
+    var currentModelIdentifier: String? {
+        let conversation = conversations.first { $0.id == activeConversationID }
+        guard agentMode == .directAPI else { return nil }
+        if currentAssistantEngine == .chatGPT {
+            return (try? harness.chatGPTClient.selection(conversationID: activeConversationID))?.model
+        }
+        return currentActivity.model ?? conversation?.runtimeModel ?? OpenCodeConfigGenerator.currentModelID()
+    }
+    var currentModelLabel: String {
+        guard let model = currentModelIdentifier, !model.isEmpty else {
+            return agentMode == .directAPI ? "选择模型" : agentMode.label
+        }
+        return ChatGPTPlanAuth.shared.models.first { $0.slug == model }?.display_name ?? model
+    }
+    func openAssistantSettings(detail: String? = nil) { settingsDetail = detail; showSettings = true }
+
+    func openTaskDirectory() {
+        if let path = harness.chatGPTClient.boundDirectory(conversationID: activeConversationID) {
+            NSWorkspace.shared.open(URL(fileURLWithPath: path, isDirectory: true))
+        }
+    }
+
+    func handleIssueRecovery() {
+        guard let issue = currentIssue, let recovery = issue.recovery else { return }
+        let id = activeConversationID
+        switch recovery {
+        case .settings: openAssistantSettings()
+        case .signIn:
+            openAssistantSettings(detail: "account")
+            if !hasAgentWork, !ChatGPTPlanAuth.shared.busy, agentMode == .directAPI && currentAssistantEngine == .chatGPT {
+                let accountID = (try? harness.chatGPTClient.selection(conversationID: id))?.accountID
+                ChatGPTPlanAuth.shared.signIn(accountID: accountID)
+            }
+        case .usage:
+            if agentMode == .directAPI && currentAssistantEngine == .chatGPT {
+                NSWorkspace.shared.open(URL(string: "https://chatgpt.com/#settings")!)
+            } else { openAssistantSettings() }
+        case .reconnect: checkConnection()
+        case .inspectTask:
+            guard !hasAgentWork, !checkingTaskIDs.contains(id), currentAssistantEngine == .chatGPT else { return }
+            checkingTaskIDs.insert(id)
+            Task { @MainActor in
+                defer { checkingTaskIDs.remove(id) }
+                do {
+                    let inspection = try await harness.chatGPTClient.inspectTask(conversationID: id, configuration: agentConfiguration)
+                    guard let index = conversations.firstIndex(where: { $0.id == id }) else { return }
+                    if ["completed", "failed", "interrupted"].contains(inspection.status) {
+                        let text = Self.sanitizeAssistantVisibleContent(inspection.text)
+                        let result = text.isEmpty ? "上次任务\(inspection.status == "completed" ? "已完成" : "已结束")。请检查工作目录中的文件和执行结果。" : text
+                        if let messageID = issue.relatedMessageID,
+                           let m = conversations[index].messages.firstIndex(where: { $0.id == messageID }) {
+                            conversations[index].messages[m].content = result
+                            conversations[index].messages[m].isStreaming = false
+                        } else { conversations[index].messages.append(ChatMessage(role: .assistant, content: result)) }
+                        if inspection.status == "completed" {
+                            conversations[index].issue = nil
+                            if id == activeConversationID { errorMessage = nil }
+                        } else {
+                            conversations[index].issue = ChatIssue(message: "上次任务\(inspection.status == "failed" ? "失败" : "已停止")，未重新执行请求。请检查结果后决定下一步。", isPersistent: true)
+                        }
+                    } else {
+                        conversations[index].issue?.message = "上次任务仍未结束，稍后可再次检查。没有重新执行请求。"
+                    }
+                    storage.saveConversations(conversations)
+                } catch {
+                    guard let index = conversations.firstIndex(where: { $0.id == id }) else { return }
+                    conversations[index].issue?.message = error.localizedDescription
+                    storage.saveConversations(conversations)
+                }
+            }
+        }
+    }
+
+    private func reportAgentIssue(_ message: String, conversationID: String, messageID: String? = nil) {
+        var issue = ChatIssue.classify(message, unconfirmedTask: harness.chatGPTClient.hasUnconfirmedTask(conversationID: conversationID))
+        issue.isPersistent = true
+        issue.relatedMessageID = messageID
+        if let index = conversations.firstIndex(where: { $0.id == conversationID }) { conversations[index].issue = issue }
+        if conversationID == activeConversationID { SoundManager.play(.error) }
+        storage.saveConversations(conversations)
+    }
+
     var connectionStatus: ConnectionStatus = .unknown
     /// 当前进行中的发送 Task，用户可取消
     /// 每个对话独立的请求 Task —— key 是 conversationID。
@@ -82,11 +182,14 @@ final class ChatViewModel {
 
     var agentConfiguration = AgentConfiguration()
     private var oneShotCount = 0
-    var hasAgentWork: Bool { conversations.contains(where: { $0.isStreaming }) || oneShotCount > 0 }
+    var hasAgentWork: Bool { conversations.contains(where: { $0.isStreaming }) || oneShotCount > 0 || !checkingTaskIDs.isEmpty }
 
     func saveAgentConfiguration(_ configuration: AgentConfiguration, memory: String) throws {
         guard !hasAgentWork else {
             throw AgentHarnessError.configuration("任务正在进行，请完成或取消后再修改 Agent 配置")
+        }
+        guard !conversations.contains(where: { harness.chatGPTClient.hasUnconfirmedTask(conversationID: $0.id) }) else {
+            throw AgentHarnessError.configuration("有任务结果尚未确认，请先检查任务状态再修改 Agent 配置。")
         }
         try configuration.validate()
         guard memory.count <= 6_000 else {
@@ -131,8 +234,7 @@ final class ChatViewModel {
     var directAPIResponsePreference: DirectResponsePreference {
         didSet { UserDefaults.standard.set(directAPIResponsePreference.rawValue, forKey: "directAPIResponsePreference") }
     }
-    /// AI 助手模式下的本地 agent/runtime 选择。
-    /// 除 Claude/Codex 外都统一使用 directAPI 服务商配置；选择 opencode 时额外启用本地 runtime。
+    /// New conversations use this engine; each engine owns its credentials.
     var onlineAIAgent: OnlineAIAgent {
         didSet {
             UserDefaults.standard.set(onlineAIAgent.rawValue, forKey: OnlineAIAgent.defaultsKey)
@@ -144,6 +246,11 @@ final class ChatViewModel {
     }
     var currentAssistantEngine: OnlineAIAgent {
         conversations.first(where: { $0.id == activeConversationID })?.assistantEngine ?? onlineAIAgent
+    }
+    var chatGPTConversationInfo: String {
+        guard let selection = try? harness.chatGPTClient.selection(conversationID: activeConversationID) else { return "请在设置中登录 ChatGPT" }
+        let account = ChatGPTPlanAuth.shared.accounts.first { $0.id == selection.accountID }
+        return "\(account?.label ?? "原授权账号") · \(selection.model) · 使用 ChatGPT 订阅额度"
     }
     var advancedCLIEnabled: Bool = UserDefaults.standard.bool(forKey: "advancedCLIEnabled") {
         didSet { UserDefaults.standard.set(advancedCLIEnabled, forKey: "advancedCLIEnabled") }
@@ -494,6 +601,7 @@ final class ChatViewModel {
             queue: .main
         ) { note in
             guard let requestID = note.userInfo?["requestID"] as? String,
+                  !requestID.hasPrefix("tars-chatgpt-"),
                   let raw = note.userInfo?["decision"] as? String,
                   let decision = PermissionDecision(rawValue: raw) else { return }
             Task.detached(priority: .userInitiated) {
@@ -511,6 +619,7 @@ final class ChatViewModel {
             queue: .main
         ) { note in
             guard let requestID = note.userInfo?["requestID"] as? String,
+                  !requestID.hasPrefix("tars-chatgpt-"),
                   let answers = note.userInfo?["answers"] as? [[String]] else { return }
             Task.detached(priority: .userInitiated) {
                 await OpenCodeHTTPClient.shared.replyQuestion(
@@ -524,13 +633,10 @@ final class ChatViewModel {
             object: nil,
             queue: .main
         ) { note in
-            guard let requestID = note.userInfo?["requestID"] as? String else { return }
+            guard let requestID = note.userInfo?["requestID"] as? String, !requestID.hasPrefix("tars-chatgpt-") else { return }
             Task.detached(priority: .userInitiated) {
                 await OpenCodeHTTPClient.shared.rejectQuestion(requestID: requestID)
             }
-        }
-        harness.agentsClient.onCleanupError = { [weak self] message in
-            Task { @MainActor in self?.errorMessage = message }
         }
     }
 
@@ -582,6 +688,7 @@ final class ChatViewModel {
         let checkID = UUID()
         connectionCheckID = checkID
         let mode = agentMode
+        let checkedConversationID = activeConversationID
         let engine = currentAssistantEngine
         if mode == .directAPI && engine == .opencode {
             if directAPIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -593,7 +700,11 @@ final class ChatViewModel {
             if directAPIModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 connectionStatus = .disconnected("未选择模型"); return
             }
-            if OpenCodeServerManager.shared.isReady { connectionStatus = .connected; return }
+            if OpenCodeServerManager.shared.isReady {
+                connectionStatus = .connected
+                if currentIssue?.recovery == .reconnect { dismissError() }
+                return
+            }
         }
         connectionStatus = .unknown
         Task {
@@ -601,8 +712,10 @@ final class ChatViewModel {
             do {
                 switch mode {
                 case .directAPI:
-                    if engine == .agentsAPI { try await harness.agentsClient.checkConnection() }
-                    else { try await OpenCodeServerManager.shared.start() }
+                    switch engine {
+                    case .chatGPT: try await harness.chatGPTClient.checkConnection(conversationID: checkedConversationID)
+                    case .opencode: try await OpenCodeServerManager.shared.start()
+                    }
                     status = .connected
                 case .claudeCode:
                     status = await claudeClient.checkAvailable() ? .connected : .disconnected("Claude 未就绪")
@@ -612,6 +725,9 @@ final class ChatViewModel {
             } catch { status = .disconnected(error.localizedDescription) }
             guard connectionCheckID == checkID else { return }
             connectionStatus = status
+            if case .connected = status, (currentIssue?.recovery == .reconnect || currentIssue?.recovery == .signIn) {
+                dismissError()
+            }
         }
     }
 
@@ -644,8 +760,8 @@ final class ChatViewModel {
             showSettings = true
             return
         }
-        if agentMode == .directAPI && currentAssistantEngine == .agentsAPI {
-            do { _ = try AgentsCredentials.load(); try AgentsAPISettings.load().validate() }
+        if agentMode == .directAPI && currentAssistantEngine == .chatGPT {
+            do { _ = try harness.chatGPTClient.selection(conversationID: activeConversationID) }
             catch { errorMessage = error.localizedDescription; showSettings = true; return }
         }
         // 任意模式下断开都先尝试重连
@@ -677,7 +793,7 @@ final class ChatViewModel {
         }
 
         inputText = ""
-        errorMessage = nil
+        dismissError()
 
         // 发送音 —— 所有 guard 通过、清空输入之后才响，避免被拒/连接断开时也响
         SoundManager.play(.send)
@@ -688,7 +804,7 @@ final class ChatViewModel {
             conversations[idx].isStreaming = true
         }
         // 通知灵动岛右耳切换到 "working"（旋转加载圈）
-        NotificationCenter.default.post(name: .init("HermesPetTaskStarted"), object: nil)
+        NotificationCenter.default.post(name: .init("HermesPetTaskStarted"), object: nil, userInfo: ["conversationID": activeConversationID])
         broadcastBackgroundStreamingCount()
 
         // 文字为空时按附件类型给个合理的默认 prompt
@@ -759,12 +875,17 @@ final class ChatViewModel {
             if let index = conversations.firstIndex(where: { $0.id == targetConversationID }) {
                 conversations[index].isStreaming = false
             }
-            errorMessage = error.localizedDescription
+            reportAgentIssue(error.localizedDescription, conversationID: targetConversationID, messageID: assistantMessageID)
+            activityStore.start(targetConversationID)
+            activityStore.finish(targetConversationID, phase: .failed)
             storage.saveConversations(conversations)
             broadcastBackgroundStreamingCount()
             NotificationCenter.default.post(name: .init("HermesPetTaskFinished"), object: nil,
-                                            userInfo: ["success": false])
+                                            userInfo: ["success": false, "conversationID": targetConversationID])
             return
+        }
+        if let index = conversations.firstIndex(where: { $0.id == targetConversationID }) {
+            conversations[index].runtimeModel = run.chatGPTModel ?? run.opencodeModel
         }
         let request = PendingStreamRequest(
             conversationID: targetConversationID,
@@ -778,6 +899,7 @@ final class ChatViewModel {
             updateMessage(conversationID: targetConversationID, messageID: assistantMessageID) { msg in
                 msg.content = "⏳ 排队中（前面还有 \(ahead) 个对话在跑，完成后自动开始）"
             }
+            activityStore.start(targetConversationID, phase: .queued)
             pendingStreams.append(request)
             return
         }
@@ -827,7 +949,7 @@ final class ChatViewModel {
                     var cloudText = ""
                     for try await delta in harness.stream(run) {
                         try Task.checkCancellation()
-                        if run.mode == .directAPI && run.engine == .agentsAPI {
+                        if run.mode == .directAPI && run.engine == .chatGPT {
                             AgentTextUpdate.apply(delta, to: &cloudText)
                         } else { continuation.yield(delta) }
                     }
@@ -964,6 +1086,7 @@ final class ChatViewModel {
         let targetConversationID = request.conversationID
         let assistantMessageID = request.assistantMessageID
         let mode = request.run.mode
+        activityStore.start(targetConversationID)
 
         updateMessage(conversationID: targetConversationID, messageID: assistantMessageID) { msg in
             msg.content = ""
@@ -972,6 +1095,7 @@ final class ChatViewModel {
 
         let task = Task {
             var didSucceed = false
+            var wasCancelled = false
             do {
                 let stream = harness.stream(request.run)
 
@@ -988,6 +1112,7 @@ final class ChatViewModel {
                     try Task.checkCancellation()
                     AgentTextUpdate.apply(delta, to: &fullContent)
                     let visibleContent = Self.sanitizeAssistantVisibleContent(fullContent)
+                    if !visibleContent.isEmpty { self.activityStore.setPhase(.responding, for: targetConversationID) }
                     let now = Date()
                     if now.timeIntervalSince(lastUpdate) >= throttle {
                         self.updateMessage(conversationID: targetConversationID, messageID: assistantMessageID) { msg in
@@ -1018,6 +1143,7 @@ final class ChatViewModel {
                 // 用户决定只保留聊天窗里的 ChoiceCard。不再 post HermesPetChoiceListReady。
                 // ChoiceMenuOverlay 渲染代码暂保留作 dead code，没人 trigger 永不弹出。
             } catch is CancellationError {
+                wasCancelled = true
                 self.updateMessage(conversationID: targetConversationID, messageID: assistantMessageID) { msg in
                     msg.isStreaming = false
                     if msg.content.isEmpty {
@@ -1028,11 +1154,13 @@ final class ChatViewModel {
                 }
             } catch {
                 let friendly = self.friendlyError(error)
+                let unconfirmed = self.harness.chatGPTClient.hasUnconfirmedTask(conversationID: targetConversationID)
                 self.updateMessage(conversationID: targetConversationID, messageID: assistantMessageID) { msg in
                     msg.isStreaming = false
-                    msg.content = "❌ \(friendly)"
+                    if unconfirmed, !msg.content.isEmpty { msg.content += "\n\n_任务结果尚未确认，请检查状态。_" }
+                    else { msg.content = "❌ \(friendly)" }
                 }
-                self.errorMessage = friendly
+                self.reportAgentIssue(friendly, conversationID: targetConversationID, messageID: assistantMessageID)
                 // AI 助手撞错时让 TARS 给一句可操作提示。
                 if mode == .directAPI {
                     let petHint = Self.petHintForError(friendly)
@@ -1043,9 +1171,14 @@ final class ChatViewModel {
                     )
                 }
             }
+            if wasCancelled && harness.chatGPTClient.hasUnconfirmedTask(conversationID: targetConversationID) {
+                reportAgentIssue("已请求停止，但上次任务结果尚未确认。请检查任务状态后决定下一步。", conversationID: targetConversationID, messageID: assistantMessageID)
+            }
+            activityStore.finish(targetConversationID, phase: didSucceed ? .completed : wasCancelled ? .cancelled : .failed)
             // 清理：目标对话 isStreaming → false；task 从字典里移除
             if let idx = self.conversations.firstIndex(where: { $0.id == targetConversationID }) {
                 self.conversations[idx].isStreaming = false
+                if let model = self.activityStore.activity(for: targetConversationID).model { self.conversations[idx].runtimeModel = model }
                 // 后台对话完成 → 标记未读（如果用户在等待期间切走了）
                 if didSucceed, targetConversationID != self.activeConversationID {
                     self.conversations[idx].hasUnread = true
@@ -1149,11 +1282,13 @@ final class ChatViewModel {
             if let convIdx = conversations.firstIndex(where: { $0.id == id }) {
                 conversations[convIdx].isStreaming = false
             }
+            activityStore.finish(id, phase: .cancelled)
+            storage.saveConversations(conversations)
             broadcastBackgroundStreamingCount()
             NotificationCenter.default.post(
                 name: .init("HermesPetTaskFinished"),
                 object: nil,
-                userInfo: ["success": false, "playSound": false]
+                userInfo: ["success": false, "playSound": false, "conversationID": id]
             )
             return
         }
@@ -1331,6 +1466,8 @@ final class ChatViewModel {
             conversations[idx].assistantEngine = nil
         }
         // 清空时也重置 Claude 的会话延续状态
+        dismissError()
+        activityStore.remove(activeConversationID)
         harness.reset(conversationID: activeConversationID)
         harness.removeArchive(conversationID: activeConversationID)
         storage.saveConversations(conversations)
@@ -1495,6 +1632,7 @@ final class ChatViewModel {
         // 关闭前清理图片文件
         let allPaths = conversations[idx].messages.flatMap { $0.imagePaths }
         if !allPaths.isEmpty { storage.deleteImageFiles(allPaths) }
+        activityStore.remove(id)
         harness.reset(conversationID: id)
         harness.removeArchive(conversationID: id)
 

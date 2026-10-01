@@ -107,6 +107,8 @@ struct Conversation: Identifiable, Codable, Equatable {
     /// 该对话锁定的 AI 后端。创建时设置，发了第一条 user 消息后就锁死不可改
     var mode: AgentMode
     var assistantEngine: OnlineAIAgent?
+    var runtimeModel: String? = nil
+    var issue: ChatIssue? = nil
     /// 对话类型（普通聊天 / 画布工作区）。canvas 时 `canvas` 字段有值
     var kind: ConversationKind
     /// 画布工作区数据 —— 仅 kind=.canvas 时有值。每个画布独立绑定一个 board
@@ -150,7 +152,7 @@ struct Conversation: Identifiable, Codable, Equatable {
 
     // hasUnread / mode / kind / canvas 参与序列化；isStreaming 是内存态，重启后归 false
     private enum CodingKeys: String, CodingKey {
-        case id, title, messages, createdAt, updatedAt, hasUnread, mode, kind, canvas, assistantEngine
+        case id, title, messages, createdAt, updatedAt, hasUnread, mode, kind, canvas, assistantEngine, runtimeModel, issue
     }
 
     init(from decoder: Decoder) throws {
@@ -169,6 +171,8 @@ struct Conversation: Identifiable, Codable, Equatable {
             let legacy = UserDefaults.standard.string(forKey: "agentMode") ?? ""
             self.mode = AgentMode(rawValue: legacy) ?? .directAPI
         }
+        self.runtimeModel = try c.decodeIfPresent(String.self, forKey: .runtimeModel)
+        self.issue = try c.decodeIfPresent(ChatIssue.self, forKey: .issue)
         self.assistantEngine = (try c.decodeIfPresent(String.self, forKey: .assistantEngine)).map(OnlineAIAgent.restored)
         if self.assistantEngine == nil && self.messages.contains(where: { $0.role == .user }) {
             self.assistantEngine = .opencode
@@ -312,7 +316,7 @@ let kMaxConversations = 8
 
 /// 桌宠当前跟谁聊：
 /// - **AI 助手**：直连第三方服务商（DeepSeek / 智谱 / Kimi / MiniMax / OpenAI 等），
-///   可选 OpenAI Agents API 或 opencode；Claude/Codex CLI 位于高级设置
+///   可选 ChatGPT 订阅或 opencode；Claude/Codex CLI 位于高级设置
 /// - **Claude Code CLI** / **OpenAI Codex CLI**：本地子进程，能读写文件 / 跑命令 / 生图
 enum AgentMode: String, Codable, CaseIterable, Identifiable {
     case directAPI  = "direct_api"
@@ -340,19 +344,26 @@ enum AgentMode: String, Codable, CaseIterable, Identifiable {
 
 /// Legacy runtime choices migrate to opencode; only supported backends are selectable.
 enum OnlineAIAgent: String, Codable, CaseIterable, Identifiable {
-    case agentsAPI = "openai_agents"
+    case chatGPT = "chatgpt_plan"
     case opencode
     static let defaultsKey = "onlineAIAgent"
-    static var selectableCases: [Self] { [.agentsAPI, .opencode] }
-    static func restored(_ raw: String?) -> Self { Self(rawValue: raw ?? "") ?? .opencode }
+    static var selectableCases: [Self] { [.chatGPT, .opencode] }
+    static func restored(_ raw: String?) -> Self {
+        // Removed cloud conversations keep their local history and require a fresh subscription grant.
+        if raw == "openai_agents" { return .chatGPT }
+        return Self(rawValue: raw ?? "") ?? .opencode
+    }
     var id: String { rawValue }
-    var label: String { self == .agentsAPI ? "OpenAI Agents API" : "opencode" }
-    var iconName: String { self == .agentsAPI ? "sparkles" : "cube.transparent.fill" }
+    var label: String {
+        switch self { case .chatGPT: "ChatGPT 订阅"; case .opencode: "opencode" }
+    }
+    var iconName: String { self == .opencode ? "cube.transparent.fill" : "sparkles" }
     var requiresDirectProviderConfig: Bool { self == .opencode }
     var caption: String {
-        self == .agentsAPI
-            ? "Beta · OpenAI 管理会话与调度，本机执行器处理文件和命令。使用独立的 OpenAI 密钥。"
-            : "本地 opencode runtime，使用你配置的服务商模型与 API Key。"
+        switch self {
+        case .chatGPT: "使用 ChatGPT 登录，共享 Plus / Pro 订阅额度。本机 Codex 执行文件和命令；无需 API Key。"
+        case .opencode: "本地 opencode runtime，使用你配置的服务商模型与 API Key。"
+        }
     }
     var directSystemInstructions: String { TarsPersonality.instructions }
 }

@@ -22,7 +22,7 @@ Tars is a native SwiftUI macOS app. Click the capsule below the notch to open ch
 
 - Up to eight independent, concurrently streaming conversations
 - AI Assistant, Claude Code, and Codex modes
-- OpenAI Agents API (Beta) for managed cloud sessions with a local executor
+- Sign in with ChatGPT to use shared Plus / Pro subscription allowance without an API key
 - Bundled opencode for other provider models; Claude Code / Codex CLI in Advanced settings
 - Markdown, GFM tables, code blocks, images, path-based documents, and Codex image generation
 - ScreenCaptureKit screenshots, push-to-talk, global quick ask, and desktop Pins
@@ -33,25 +33,25 @@ Tars is a native SwiftUI macOS app. Click the capsule below the notch to open ch
 
 | Mode | Best for | Setup |
 |---|---|---|
-| **AI Assistant** | Chat, writing, vision, local agent tools | Configure Agents API credentials or an opencode provider |
+| **AI Assistant** | Chat, writing, vision, local agent tools | Sign in with ChatGPT, or configure an opencode provider |
 | **Claude Code** | File edits, commands, coding tasks | Claude signed in locally |
 | **Codex** | Coding, commands, image generation | Codex signed in locally |
 
-## OpenAI Agents API (Beta)
+## ChatGPT subscription
 
-Configure a model, application key and dedicated environment key in Settings → AI Assistant. Keys are stored in macOS Keychain. The application key needs Agents read/write and Responses write permissions. The environment key must only permit environment connections and belong to the same project and owner. See [OpenAI setup](https://developers.openai.com/api/docs/guides/agents-api/environments/self-hosted).
+Select **ChatGPT subscription** in Settings → AI Assistant, sign in through OpenAI in your system browser, choose an account model, and run **Verify subscription connection**. Verification uses a small amount of subscription allowance and succeeds only after a completed inference turn. This follows the official [open-source/local-project authorization flow](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) and public Responses API. Install a current Codex CLI supporting `app-server`; Tars supplies its own OAuth credentials and does not read your existing Codex login.
 
-Install a Codex CLI that supports `exec-server`. Tars manages one executor per cloud session. Agent settings provide workspace and Skills directories, saved preferences, MCP servers and native multi-agent configuration. Documents are sent as paths; images are sent as image inputs. OpenAI manages cloud context compaction. Existing defaults remain on opencode until explicitly changed; retired runtime selections migrate to opencode.
+Credentials stay in the macOS Keychain. Tars validates PKCE/state, nonce and ID-token signatures, supports multiple accounts, refreshes credentials and revokes renewable sessions on sign-out. Each conversation binds its account, model and workspace. Thread mappings live in `~/.hermespet/agents/chatgpt-threads.json` with mode 0600. Local commands, document paths, images, MCP and Skills use the app-server harness. The preview does not provide ChatGPT history/memory, hosted image generation or speech endpoints; advanced Codex image generation remains a separate route. Usage shares Codex / ChatGPT Work allowance and can be managed in ChatGPT Settings → Usage. Quota errors never fall back to paid API billing. Uncertain turns are inspected, never replayed automatically.
 
-Connection checks are read-only. Use the explicit conversation validation button to test the model and environment key; this incurs API usage. Stream EOF and idle are not success. Saved terminal turns and items can recover output; otherwise Tars requests cancellation and stops the executor without replaying input. Unconfirmed requests survive restarts and may require clearing the conversation. Browser approval interactions are not supported yet and cause an explicit error and cancellation.
+The chat strip shows the current model and opens account details. Task activity is scoped to each conversation; click its status to inspect tool operations. Authorization, quota, and execution errors stay with the conversation until handled or dismissed. Interrupted ChatGPT tasks offer a read-only status check that never starts another turn. Account management and connection diagnostics are collapsed in settings.
 
 ## Quick start
 
 Requires macOS 14+ and full Xcode:
 
 ```bash
-git clone https://github.com/simpledavid/opencrab.git
-cd opencrab
+git clone https://github.com/simpledavid/tars.git
+cd tars
 ./install.sh
 ```
 

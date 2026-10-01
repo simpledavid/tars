@@ -76,6 +76,7 @@ struct SettingsView: View {
             detail
         }
         .frame(width: 620, height: 460)
+        .onChange(of: viewModel.settingsDetail) { _, detail in if detail != nil { selectedCategory = .backend } }
     }
 
     // MARK: - 侧栏
@@ -158,14 +159,18 @@ struct SettingsView: View {
             }
             .labelsHidden().pickerStyle(.segmented)
             .disabled(viewModel.hasAgentWork)
-            Text(viewModel.onlineAIAgent.caption).font(.caption).foregroundStyle(.secondary)
-            Text("引擎选择用于新对话；已有对话继续使用原引擎。")
-                .font(.caption2).foregroundStyle(.secondary)
-            if viewModel.onlineAIAgent == .agentsAPI {
-                AgentsAPISettingsView(viewModel: viewModel)
+            if viewModel.onlineAIAgent == .opencode {
+                Text("使用服务商 API Key；引擎选择用于新对话。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if viewModel.onlineAIAgent == .chatGPT {
+                ChatGPTPlanSettingsView(viewModel: viewModel)
             } else {
                 directAPIConfig.disabled(viewModel.hasAgentWork)
             }
+            Divider()
+            Toggle("桌宠动画", isOn: Binding(get: { !viewModel.quietMode }, set: { viewModel.quietMode = !$0 }))
+                .font(.callout)
             if viewModel.hasAgentWork {
                 Text("任务进行中，完成或取消后可修改配置。")
                     .font(.caption).foregroundStyle(.secondary)
@@ -1057,7 +1062,7 @@ struct SettingsView: View {
                     .pickerStyle(.menu)
                     .frame(width: 140)
                 }
-                Text("早报会把昨天的活动摘要发给所选 AI。AI 助手使用当前选定的 Agents API 或 opencode 服务商。")
+                Text("早报会把昨天的活动摘要发给所选 AI。AI 助手使用当前选定的 ChatGPT 订阅或 opencode 服务商。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1441,7 +1446,7 @@ struct SettingsView: View {
                     }
                     .font(.system(size: 11, weight: .medium))
                     Link("查看全部贡献者",
-                         destination: URL(string: "https://github.com/simpledavid/opencrab/graphs/contributors")!)
+                         destination: URL(string: "https://github.com/simpledavid/tars/graphs/contributors")!)
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
@@ -1454,7 +1459,7 @@ struct SettingsView: View {
                 Text("代码仓库")
                     .font(.system(size: 12))
                 Spacer()
-                Link("GitHub", destination: URL(string: "https://github.com/simpledavid/opencrab")!)
+                Link("GitHub", destination: URL(string: "https://github.com/simpledavid/tars")!)
                     .font(.system(size: 12))
             }
 

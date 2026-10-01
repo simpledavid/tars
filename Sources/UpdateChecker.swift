@@ -50,7 +50,7 @@ final class UpdateChecker {
     // MARK: - 配置
 
     private static let owner = "simpledavid"
-    private static let repo = "opencrab"
+    private static let repo = "tars"
     private static let checkInterval: TimeInterval = 24 * 60 * 60   // 24h
 
     private var periodicTask: Task<Void, Never>?

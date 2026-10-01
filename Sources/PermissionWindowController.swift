@@ -105,8 +105,9 @@ final class PermissionWindowController {
             object: nil, queue: .main
         ) { [weak self] note in
             let req = note.userInfo?["request"] as? PermissionRequest
+            let conversationID = note.userInfo?["conversationID"] as? String
             MainActor.assumeIsolated {
-                if let req = req { self?.show(request: req) }
+                if let req = req { self?.show(request: req, conversationID: conversationID) }
             }
         }
         // 聊天窗 hide 时把 PetStrip 里的 pending permission 移交过来 —— 无条件 show，
@@ -220,10 +221,10 @@ final class PermissionWindowController {
 
     // MARK: - 显示 / 隐藏
 
-    private func show(request: PermissionRequest) {
+    private func show(request: PermissionRequest, conversationID: String?) {
         // 聊天窗开着时让 PetHeaderStrip 接管展开决策面（v1.2.7-dev）。
         // 此处直接 return，避免双显示。PetStrip 也监听 HermesPetPermissionAsked，自己展开
-        if ChatWindowController.shared?.isVisible == true {
+        if ChatWindowController.shared?.canPresentInlinePermission(conversationID: conversationID) == true {
             return
         }
         showUnconditionally(request: request)

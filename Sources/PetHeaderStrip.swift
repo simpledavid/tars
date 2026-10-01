@@ -23,15 +23,11 @@ struct PetHeaderStrip: View {
     @Bindable var viewModel: ChatViewModel
     @State private var paletteStore = PetPaletteStore.shared
 
-    // MARK: - 工具状态机 (跟 DynamicIslandController PillView 同款逻辑)
-    @State private var currentToolKind: ToolKind? = nil
-    @State private var currentToolArg: String = ""
-    @State private var stepStarted: Int = 0
-    @State private var stepEnded: Int = 0
-
-    // MARK: - 完成态短暂展示
-    @State private var showDoneState: Bool = false
-    @State private var doneTask: Task<Void, Never>?
+    @State private var showTaskDetails = false
+    @State private var showModelDetails = false
+    private var activity: AgentTaskActivity { viewModel.currentActivity }
+    private var currentToolKind: ToolKind? { activity.currentTool?.kind }
+    private var currentToolArg: String { activity.currentTool?.argument ?? "" }
 
     // MARK: - sprite 摸摸头跳动
     @State private var spriteJumping: Bool = false
@@ -71,22 +67,20 @@ struct PetHeaderStrip: View {
     /// 状态描述文本 (不含桌宠名)。permission pending 时会被 permission 卡片覆盖，此处仍计算给"在岛上等待"场景
     private var statusText: String {
         if let dec = lastDecision { return dec.shortResultText }
-        if pendingPermission != nil { return "请你看一眼" }
-        if showDoneState { return "搞定！" }
-        if let tool = currentToolKind {
-            let argShort = displayArg(currentToolArg)
-            if argShort.isEmpty { return tool.verb }
-            return "\(tool.verb) · \(argShort)"
+        if pendingPermission != nil { return "等待批准" }
+        if activity.isWaiting { return activity.label }
+        if activity.phase.isRunning, currentToolKind != nil {
+            let arg = displayArg(currentToolArg)
+            return arg.isEmpty ? activity.label : "\(activity.label) · \(arg)"
         }
-        if viewModel.isLoading { return "思考中..." }
-        return "在这呢"
+        return activity.label
     }
 
     /// sprite 内部动画状态：工具调用中 / 流式中都视为"在干活"。permission pending 时也算"求救态"算工作
     private var spriteIsWorking: Bool {
         pendingPermission != nil
             || currentToolKind != nil
-            || (viewModel.isLoading && !showDoneState)
+            || activity.phase.isRunning
     }
 
     /// 当前是否处于 permission 展开态（包含决策后短暂展示结果阶段）
@@ -96,7 +90,7 @@ struct PetHeaderStrip: View {
 
     /// sprite 是否切到 armsUp pose（permission pending 时举手"求救"）
     private var spritePose: TarsPose {
-        inPermissionMode ? .armsUp : .rest
+        inPermissionMode || activity.isWaiting ? .armsUp : .rest
     }
 
     /// 光圈颜色 —— permission pending 时切到 systemOrange 表达紧迫感
@@ -106,14 +100,14 @@ struct PetHeaderStrip: View {
 
     /// 光圈强度 —— permission pending 时拉高
     private var spotOpacity: Double {
-        if inPermissionMode { return 0.55 }
+        if inPermissionMode || activity.isWaiting { return 0.55 }
         return 0.45 * workingHighlight
     }
 
     /// 工具进度 "M/N"（只在多步工具调用时显示，单步省略避免视觉噪音）
     private var stepText: String? {
-        guard stepStarted >= 2 else { return nil }
-        return "\(min(stepEnded, stepStarted))/\(stepStarted)"
+        guard activity.tools.count >= 2 else { return nil }
+        return "\(activity.completedTools)/\(activity.tools.count)"
     }
 
     /// 简化参数：路径只保留 lastPathComponent，长字符串截断到 24 字
@@ -161,78 +155,32 @@ struct PetHeaderStrip: View {
         )
         .animation(.spring(response: 0.45, dampingFraction: 0.84), value: inPermissionMode)
         .onAppear {
+            workingHighlight = activity.phase.isRunning ? 1 : 0
             // 启动 sprite 光圈呼吸动画（永久循环，idle 时光圈透明所以看不见）
             withAnimation(.easeInOut(duration: 1.4).repeatForever(autoreverses: true)) {
                 spotPulse = true
             }
         }
-        // —— 通知监听：跟 DynamicIslandController PillView 同款 schema ——
-        .onReceive(NotificationCenter.default.publisher(for: .init("HermesPetTaskStarted"))) { _ in
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                currentToolKind = nil
-                currentToolArg = ""
-                stepStarted = 0
-                stepEnded = 0
-                showDoneState = false
-            }
-            // strip 整体被"点亮" —— 颜色加深 + sprite 光圈浮现
-            withAnimation(.easeOut(duration: 0.45)) {
-                workingHighlight = 1.0
-            }
-            doneTask?.cancel()
+        .onChange(of: activity.phase) { _, phase in
+            withAnimation(.easeOut(duration: 0.4)) { workingHighlight = phase.isRunning ? 1 : 0 }
+            if phase == .completed { headPat() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .init("HermesPetToolStarted"))) { note in
-            guard let name = note.userInfo?["name"] as? String else { return }
-            let kind = ToolKind.from(toolName: name)
-            // 优先用 arg (短描述)，没有再降级到 file_path (Write/Edit 类工具)
-            let arg = (note.userInfo?["arg"] as? String)
-                ?? (note.userInfo?["file_path"] as? String)
-                ?? ""
-            stepStarted += 1
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
-                currentToolKind = kind
-                currentToolArg = arg
-            }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .init("HermesPetToolEnded"))) { _ in
-            stepEnded += 1
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .init("HermesPetTaskFinished"))) { note in
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.85)) {
-                currentToolKind = nil
-                currentToolArg = ""
-            }
-            let success = (note.userInfo?["success"] as? Bool) ?? false
-            // 不管 success 与否，工作高亮都该退掉
-            doneTask?.cancel()
-            if success {
-                // 成功 → 短暂"搞定！" + sprite 跳一下，0.9s 后整体淡回 idle
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
-                    showDoneState = true
-                    spriteJumping = true
-                }
-                doneTask = Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 280_000_000)
-                    spriteJumping = false
-                    try? await Task.sleep(nanoseconds: 620_000_000)
-                    if Task.isCancelled { return }
-                    withAnimation(.easeOut(duration: 0.5)) {
-                        showDoneState = false
-                        workingHighlight = 0
-                    }
-                }
-            } else {
-                // 失败 / 取消 → 直接淡回 idle
-                withAnimation(.easeOut(duration: 0.45)) {
-                    workingHighlight = 0
-                }
+        .onChange(of: viewModel.activeConversationID) { _, _ in
+            showTaskDetails = false
+            showModelDetails = false
+            withAnimation(.easeOut(duration: 0.3)) { workingHighlight = activity.phase.isRunning ? 1 : 0 }
+            if let request = pendingPermission {
+                pendingPermission = nil
+                lastDecision = nil
+                NotificationCenter.default.post(name: .init("HermesPetPermissionMigrateToIsland"), object: nil, userInfo: ["request": request])
             }
         }
         // —— Permission 监听：聊天窗开着时接管展开，关着时让 PermissionWindowController 弹独立窗口 ——
         .onReceive(NotificationCenter.default.publisher(for: .init("HermesPetPermissionAsked"))) { note in
             guard let req = note.userInfo?["request"] as? PermissionRequest else { return }
             // 聊天窗关着 → 不接管（让 PermissionWindowController 用独立窗口接管）
-            guard ChatWindowController.shared?.isVisible == true else { return }
+            let conversationID = note.userInfo?["conversationID"] as? String
+            guard ChatWindowController.shared?.canPresentInlinePermission(conversationID: conversationID) == true else { return }
             // 接管 → 展开 90pt
             permissionDismissTask?.cancel()
             withAnimation(.spring(response: 0.5, dampingFraction: 0.84)) {
@@ -304,40 +252,38 @@ struct PetHeaderStrip: View {
             .help("\(petName) · 摸摸头")
             .padding(.leading, Self.spriteLeadingPad)
 
-            // 名字 · 状态
-            HStack(spacing: 5) {
-                Text(petName)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.primary.opacity(0.88))
-                Text("·")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Text(statusText)
-                    .font(.system(size: 11))
-                    .foregroundStyle(inPermissionMode
-                                     ? Color(NSColor.systemOrange)
-                                     : Color.secondary)
-                    .lineLimit(1)
-                    .id(statusText) // 文本变化时强制重建 → transition 生效
-                    .transition(.opacity)
+            Text(petName)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.primary.opacity(0.88))
+            Button { showTaskDetails.toggle() } label: {
+                HStack(spacing: 4) {
+                    Text(statusText).lineLimit(1)
+                    Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(inPermissionMode || activity.isWaiting ? Color.orange : Color.secondary)
             }
-            .animation(.easeInOut(duration: 0.2), value: statusText)
+            .buttonStyle(.plain)
+            .help("查看当前对话的任务过程")
+            .popover(isPresented: $showTaskDetails) { AgentTaskDetailsView(activity: activity) }
 
             Spacer(minLength: 4)
 
-            Menu {
-                Button("新建 AI 助手对话") { viewModel.newConversation(mode: .directAPI) }
-                if viewModel.advancedCLIEnabled {
-                    Divider()
-                    Button("新建 Claude Code 对话") { viewModel.newConversation(mode: .claudeCode) }
-                    Button("新建 Codex 对话") { viewModel.newConversation(mode: .codex) }
+            Button { showModelDetails.toggle() } label: {
+                HStack(spacing: 3) {
+                    Text(viewModel.currentModelLabel)
+                        .lineLimit(1).truncationMode(.middle)
+                    Image(systemName: "chevron.down").font(.system(size: 7, weight: .semibold))
                 }
-            } label: {
-                Text(mode == .directAPI ? viewModel.currentAssistantEngine.label : mode.label)
-                    .font(.system(size: 10)).foregroundStyle(.secondary)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundStyle(.secondary)
             }
-            .menuStyle(.borderlessButton).fixedSize()
-            .help("当前引擎 · 新建对话")
+            .buttonStyle(.plain)
+            .frame(maxWidth: 125, alignment: .trailing)
+            .help("查看当前模型与账号")
+            .popover(isPresented: $showModelDetails) {
+                ConversationModelDetailsView(viewModel: viewModel, onClose: { showModelDetails = false })
+            }
 
             // 右侧工具图标 + 进度（permission 展开时隐藏 —— 决策栏更显眼）
             if let kind = currentToolKind, !inPermissionMode {
