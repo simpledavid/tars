@@ -1,14 +1,9 @@
 import SwiftUI
 
-/// 灵动岛左耳的 mode 精灵 —— 显示当前 AgentMode 的标志元素，
-/// 并在"工作中"（流式生成时）播放各自专属的动画。
-///
-/// Claude → 橘色 asterisk 自转（Claude 品牌色）
-/// Hermes → 绿色羽毛轻摆（信使羽毛）
-/// Codex  → 青色 `</>` 旁边加一个闪烁光标
+/// Tars 唯一的灵动岛宠物。AgentMode 只影响业务路由，不更换宠物形象。
 struct ModeSpriteView: View {
     let mode: AgentMode
-    /// 是否正在"工作中" —— 播放各自的动画
+    /// 是否正在工作中
     let isWorking: Bool
     let size: CGFloat
 
@@ -17,291 +12,7 @@ struct ModeSpriteView: View {
 
     var body: some View {
         let palette = paletteStore.palette(for: mode)
-        ClaudeKnotSprite(isWorking: isWorking, size: size, palette: palette)
-    }
-}
-
-// MARK: - Claude：Clawd 🦞 (8-bit 像素小家伙，自家版本)
-
-/// Clawd 的 pose 状态。形象**完全照搬 Anthropic 官方 SVG**（参考
-/// marciogranzotto/clawd-tank/clawd-static-base.svg）：viewBox 15×10 上的
-/// 几个矩形组件构成 —— torso 大矩形 + 左右手臂 + 4 条腿（2+2 不等距）+
-/// 两个 1×2 竖长眼睛 + 半透明地面阴影。
-///
-/// pose 主要影响眼神方向和 armsUp（伸懒腰）。
-/// 走路 / 呼吸 / 眨眼等动画由 ClawdView 内部 TimelineView 自动驱动
-enum ClawdPose {
-    case rest, lookLeft, lookRight, armsUp
-}
-
-/// Clawd sprite 的一个像素矩形组件。坐标在 viewBox 15×10 内
-/// （已减去官方 SVG 原 y=6 偏移，让 sprite 从 y=0 开始）
-struct ClawdRect {
-    let x: CGFloat
-    let y: CGFloat
-    let w: CGFloat
-    let h: CGFloat
-}
-
-/// 官方 Clawd 像素渲染器
-///
-/// 像素图（viewBox 15×10）：
-/// ```
-///         0  1  2  3  4  5  6  7  8  9 10 11 12 13 14
-/// row 0:           ████████████████████████████          ← torso 顶
-/// row 1:           ████████████████████████████
-/// row 2:           ██████ ▣  ██████████ ▣  ██████        ← 眼睛 col 4, col 10
-/// row 3:        █████████████████████████████████        ← 手臂左右伸 col 0-1, col 13-14
-/// row 4:        █████████████████████████████████
-/// row 5:           ████████████████████████████
-/// row 6:           ████████████████████████████          ← torso 底
-/// row 7:                  ██    ██       ██    ██        ← 4 腿（col 3, 5, 9, 11）
-/// row 8:                  ██    ██       ██    ██
-/// row 9:                 ░░░░░░░░░░░░░░░░░░░░░           ← 半透明地面阴影
-/// ```
-///
-/// 动画（TimelineView 自动驱动）：
-/// 1. **呼吸** 3.2s loop，scale ±2% 横纵反向
-/// 2. **眨眼** 5s 间隔，最后 200ms 闭眼
-/// 3. **走路** (isWalking=true 时) 1s loop：身体 bob + 4 腿对角交替 + 手臂上下摆
-/// 4. **眼神** lookLeft/lookRight → 眼睛 translate ±2 unit
-/// 5. **伸懒腰** armsUp → 身体 scale(0.95, 1.10) + 手臂上抬
-struct ClawdView: View {
-    let pose: ClawdPose
-    /// 精灵高度。最终 frame 宽 = height × 1.5（viewBox 15:10）
-    let height: CGFloat
-    /// 是否正在走路 —— 控制 4 条腿对角交替抬放
-    var isWalking: Bool = false
-    /// 眼睛是否要平滑跟随鼠标（pose 为 .rest 时才生效；
-    /// .lookLeft/.lookRight/.armsUp 时仍用离散偏移以保留这些 pose 表达力）
-    var followMouse: Bool = false
-    /// 调色板 —— 主色 + 派生高光/阴影。默认 Anthropic 官方橙；用户调色后从 PaletteStore 传入
-    var palette: PetPalette = .clawdDefault
-
-    private static let viewBoxW: CGFloat = 15
-    private static let viewBoxH: CGFloat = 10
-    /// scale 锚点：sprite 中心
-    private static let centerX: CGFloat = 7.5
-    private static let centerY: CGFloat = 5.0
-
-    // 官方静态 sprite 矩形（viewBox 15×10，已减去 y=6 偏移）
-    private static let torso     = ClawdRect(x: 2,  y: 0, w: 11, h: 7)
-    private static let leftArm   = ClawdRect(x: 0,  y: 3, w: 2,  h: 2)
-    private static let rightArm  = ClawdRect(x: 13, y: 3, w: 2,  h: 2)
-    /// 4 条腿。索引 0-3 = outer-left / inner-left / inner-right / outer-right
-    /// 走路时 (0, 2) 一组（leg-a），(1, 3) 一组（leg-b）—— 对角交替
-    private static let legs: [ClawdRect] = [
-        ClawdRect(x: 3,  y: 7, w: 1, h: 2),
-        ClawdRect(x: 5,  y: 7, w: 1, h: 2),
-        ClawdRect(x: 9,  y: 7, w: 1, h: 2),
-        ClawdRect(x: 11, y: 7, w: 1, h: 2),
-    ]
-    private static let leftEye  = ClawdRect(x: 4,  y: 2, w: 1, h: 2)
-    private static let rightEye = ClawdRect(x: 10, y: 2, w: 1, h: 2)
-    private static let shadow   = ClawdRect(x: 3,  y: 9, w: 9, h: 1)
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0/60.0)) { timeline in
-            Canvas(rendersAsynchronously: false) { ctx, size in
-                draw(ctx: ctx, size: size, now: timeline.date.timeIntervalSinceReferenceDate)
-            }
-        }
-        .frame(width: height * Self.viewBoxW / Self.viewBoxH, height: height)
-    }
-
-    // MARK: - 绘制
-
-    private func draw(ctx: GraphicsContext, size: CGSize, now: TimeInterval) {
-        let unit = min(size.width / Self.viewBoxW, size.height / Self.viewBoxH)
-        let bodyFill = GraphicsContext.Shading.color(palette.primary)
-        // body 顶部高光（自动从主色 +12% brightness 派生）：模拟左上光源，让 sprite 立体
-        let bodyTopShading = GraphicsContext.Shading.color(palette.derivedTop)
-        // body 底部阴影（自动从主色 -15% brightness 派生）：增加体积感
-        let bodyBottomShading = GraphicsContext.Shading.color(palette.derivedBottom)
-        let eyeFill  = GraphicsContext.Shading.color(.black)
-        let highlightFill = GraphicsContext.Shading.color(.white)
-        let shadowFill = GraphicsContext.Shading.color(.black.opacity(0.5))
-
-        // —— 动画参数 ——
-
-        // 呼吸 3.2s loop，scale ±2% 横纵反向
-        let breatheT = sin(now * 2 * .pi / 3.2)
-        let breatheSX: CGFloat = 1 + CGFloat(breatheT) * 0.02
-        let breatheSY: CGFloat = 1 - CGFloat(breatheT) * 0.02
-
-        // 走路 phase 0~1
-        let walkPhase = isWalking ? now.truncatingRemainder(dividingBy: 1.0) : 0
-
-        // 眨眼：每 4.5s 一次，最后 0.18s 闭眼（比之前略快眨频更俏皮）
-        let blinkCycle = 4.5
-        let blinkPhase = now.truncatingRemainder(dividingBy: blinkCycle) / blinkCycle
-        let isBlinking = blinkPhase > 0.96
-
-        // 眼神偏移（看左/看右）
-        // pose 为 .rest 且 followMouse 时：眼睛连续跟随鼠标 x/y 坐标
-        // 其他 pose（lookLeft/lookRight/armsUp）保留离散偏移，让这些 pose 仍能表达"刻意瞥一眼"
-        let (eyeLookX, eyeLookY): (CGFloat, CGFloat) = {
-            switch pose {
-            case .lookLeft:  return (-2, 0)
-            case .lookRight: return ( 2, 0)
-            case .armsUp:    return ( 0, 0)
-            case .rest:
-                guard followMouse else { return (0, 0) }
-                return Self.continuousMouseEyeOffset()
-            }
-        }()
-
-        // 伸懒腰（armsUp pose）
-        let stretching = (pose == .armsUp)
-        let stretchSX: CGFloat = stretching ? 0.95 : 1.0
-        let stretchSY: CGFloat = stretching ? 1.10 : 1.0
-        let stretchDY: CGFloat = stretching ? -1.0 : 0.0
-        let armRaise:  CGFloat = stretching ? -3.0 : 0.0
-
-        // 走路身体 bob：0%/50% 下沉 +1，25%/75% 抬 0
-        let bodyBobY: CGFloat = isWalking
-            ? ((walkPhase < 0.25 || (walkPhase >= 0.5 && walkPhase < 0.75)) ? 1 : 0)
-            : 0
-
-        // 走路时身体左右微微 sway（±0.4 单位）—— 像企鹅一摇一摆，比原版纯上下 bob 更生动
-        let walkSwayX: CGFloat = isWalking
-            ? CGFloat(sin(walkPhase * 2 * .pi)) * 0.4
-            : 0
-
-        // 走路手臂 ±1.5 摆动（左右反向）—— 比原 ±1 略大，步态更有力
-        let armSwingAmount: CGFloat = 1.5
-        let armWaveL: CGFloat = isWalking
-            ? ((walkPhase < 0.25 || (walkPhase >= 0.5 && walkPhase < 0.75)) ? -armSwingAmount : armSwingAmount)
-            : 0
-        let armWaveR: CGFloat = -armWaveL
-
-        // 总变换
-        let totalSX = breatheSX * stretchSX
-        let totalSY = breatheSY * stretchSY
-        let totalDY = bodyBobY + stretchDY
-        let totalDX = walkSwayX
-
-        // —— 渲染 ——
-
-        // 阴影（不参与 body scale / sway，固定贴地）
-        drawRect(Self.shadow, in: ctx, unit: unit,
-                 offsetX: 0, offsetY: 0,
-                 scaleX: 1, scaleY: 1, fill: shadowFill)
-
-        // 4 条腿（对角交替；不跟 sway —— 保持地面接触感）
-        for (idx, leg) in Self.legs.enumerated() {
-            let (lx, ly) = legOffset(group: (idx == 0 || idx == 2) ? 0 : 1, phase: walkPhase)
-            drawRect(leg, in: ctx, unit: unit,
-                     offsetX: lx, offsetY: ly,
-                     scaleX: totalSX, scaleY: totalSY, fill: bodyFill)
-        }
-
-        // torso（主体）
-        drawRect(Self.torso, in: ctx, unit: unit,
-                 offsetX: totalDX, offsetY: totalDY,
-                 scaleX: totalSX, scaleY: totalSY, fill: bodyFill)
-        // torso 顶部 1 行加亮（亮橘高光带，左上光源效果）
-        drawRect(ClawdRect(x: Self.torso.x, y: Self.torso.y, w: Self.torso.w, h: 1),
-                 in: ctx, unit: unit, offsetX: totalDX, offsetY: totalDY,
-                 scaleX: totalSX, scaleY: totalSY, fill: bodyTopShading)
-        // torso 底部 1 行压暗（暗橘阴影带，下沉量感）
-        drawRect(ClawdRect(x: Self.torso.x, y: Self.torso.y + Self.torso.h - 1, w: Self.torso.w, h: 1),
-                 in: ctx, unit: unit, offsetX: totalDX, offsetY: totalDY,
-                 scaleX: totalSX, scaleY: totalSY, fill: bodyBottomShading)
-
-        // 手臂（走路摆动 + 伸懒腰上抬 + sway）
-        drawRect(Self.leftArm, in: ctx, unit: unit,
-                 offsetX: totalDX, offsetY: totalDY + armWaveL + armRaise,
-                 scaleX: totalSX, scaleY: totalSY, fill: bodyFill)
-        drawRect(Self.rightArm, in: ctx, unit: unit,
-                 offsetX: totalDX, offsetY: totalDY + armWaveR + armRaise,
-                 scaleX: totalSX, scaleY: totalSY, fill: bodyFill)
-
-        // 眼睛 + 高光（让眼神"活"起来的关键）
-        let totalEyeDX = totalDX + eyeLookX
-        let totalEyeDY = totalDY + eyeLookY
-        if isBlinking {
-            // 闭眼：压扁成 0.3 单位横线，无高光
-            let centerEyeY = Self.leftEye.y + Self.leftEye.h / 2
-            let blinkH: CGFloat = 0.3
-            let blinkY = centerEyeY - blinkH / 2
-            drawRect(ClawdRect(x: Self.leftEye.x,  y: blinkY, w: 1, h: blinkH),
-                     in: ctx, unit: unit, offsetX: totalEyeDX, offsetY: totalEyeDY,
-                     scaleX: totalSX, scaleY: totalSY, fill: eyeFill)
-            drawRect(ClawdRect(x: Self.rightEye.x, y: blinkY, w: 1, h: blinkH),
-                     in: ctx, unit: unit, offsetX: totalEyeDX, offsetY: totalEyeDY,
-                     scaleX: totalSX, scaleY: totalSY, fill: eyeFill)
-        } else {
-            // 黑眼睛 1×2
-            drawRect(Self.leftEye, in: ctx, unit: unit,
-                     offsetX: totalEyeDX, offsetY: totalEyeDY,
-                     scaleX: totalSX, scaleY: totalSY, fill: eyeFill)
-            drawRect(Self.rightEye, in: ctx, unit: unit,
-                     offsetX: totalEyeDX, offsetY: totalEyeDY,
-                     scaleX: totalSX, scaleY: totalSY, fill: eyeFill)
-            // 白色高光点 0.4×0.4 在眼睛左上角 —— 单一光源效果，眼神立刻有神
-            let hlW: CGFloat = 0.4
-            let hlH: CGFloat = 0.4
-            let hlDX: CGFloat = 0.05
-            let hlDY: CGFloat = 0.1
-            drawRect(ClawdRect(x: Self.leftEye.x + hlDX, y: Self.leftEye.y + hlDY, w: hlW, h: hlH),
-                     in: ctx, unit: unit, offsetX: totalEyeDX, offsetY: totalEyeDY,
-                     scaleX: totalSX, scaleY: totalSY, fill: highlightFill)
-            drawRect(ClawdRect(x: Self.rightEye.x + hlDX, y: Self.rightEye.y + hlDY, w: hlW, h: hlH),
-                     in: ctx, unit: unit, offsetX: totalEyeDX, offsetY: totalEyeDY,
-                     scaleX: totalSX, scaleY: totalSY, fill: highlightFill)
-        }
-    }
-
-    /// 读取当前鼠标在带刘海屏上的归一化偏移，转换为眼睛偏移单位
-    /// - 返回 X: [-2, 2]（同 lookLeft/lookRight 离散值范围）
-    /// - 返回 Y: [-0.5, 0.5]（眼高 2 单位 → 上下各 1/4 偏移，subtle but visible）
-    /// NSEvent.mouseLocation 是无锁 class method，从主线程 Canvas draw 调用安全
-    nonisolated private static func continuousMouseEyeOffset() -> (CGFloat, CGFloat) {
-        let loc = NSEvent.mouseLocation
-        // 优先用带刘海屏（Clawd 主要活动区域）
-        let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 })
-            ?? NSScreen.main
-        guard let screen, screen.frame.contains(loc) else { return (0, 0) }
-        let halfW = screen.frame.width / 2
-        let halfH = screen.frame.height / 2
-        let nx = max(-1, min(1, (loc.x - screen.frame.midX) / halfW))
-        // macOS 坐标 y 是底部为 0，向上为正；眼睛 y 是顶部为 0，向下为正 → 取反
-        let ny = max(-1, min(1, (loc.y - screen.frame.midY) / halfH))
-        return (CGFloat(nx) * 2.0, CGFloat(-ny) * 0.5)
-    }
-
-    /// 还原自官方 walking SVG 的腿位移 keyframe（leg-a / leg-b 对角交替）
-    private func legOffset(group: Int, phase: Double) -> (CGFloat, CGFloat) {
-        guard isWalking else { return (0, 0) }
-        let p = phase
-        if group == 0 {  // leg-a (outer-left + inner-right)
-            if p < 0.125 { return (-2, 0) }
-            if p < 0.375 { return ( 0, 0) }
-            if p < 0.625 { return ( 2, 0) }
-            if p < 0.875 { return ( 0, -2) }
-            return (-2, 0)
-        } else {         // leg-b (inner-left + outer-right)
-            if p < 0.125 { return ( 2, 0) }
-            if p < 0.375 { return ( 0, -2) }
-            if p < 0.625 { return (-2, 0) }
-            if p < 0.875 { return ( 0, 0) }
-            return ( 2, 0)
-        }
-    }
-
-    /// 以 sprite 中心 (7.5, 5) 为锚点做 scale
-    private func drawRect(_ r: ClawdRect, in ctx: GraphicsContext, unit: CGFloat,
-                          offsetX: CGFloat, offsetY: CGFloat,
-                          scaleX: CGFloat, scaleY: CGFloat,
-                          fill: GraphicsContext.Shading) {
-        let rx = r.x + offsetX
-        let ry = r.y + offsetY
-        let screenX = (rx - Self.centerX) * scaleX * unit + Self.centerX * unit
-        let screenY = (ry - Self.centerY) * scaleY * unit + Self.centerY * unit
-        let screenW = r.w * scaleX * unit
-        let screenH = r.h * scaleY * unit
-        ctx.fill(Path(CGRect(x: screenX, y: screenY, width: screenW, height: screenH)), with: fill)
+        TarsSprite(isWorking: isWorking, size: size, palette: palette)
     }
 }
 
@@ -397,7 +108,7 @@ enum ToolKind: Equatable {
     }
 }
 
-/// 工作中 Clawd 手里挥舞的小工具 —— 模拟"在干活"
+/// 工作中 TARS 旁边显示的工具状态。
 /// 根据 ToolKind 显示对应 SF Symbol，持续摆动旋转
 /// 切换 kind 时用 .id() 强制重建 view，让动画从初始角度重启
 struct ToolOverlay: View {
@@ -419,7 +130,7 @@ struct ToolOverlay: View {
     }
 }
 
-/// Claude 模式的左耳精灵 —— Clawd 像素小家伙。
+/// Tars 全模式共用的机器人精灵。
 ///
 /// 三套互斥动画 + 优先级 working > celebrate > look：
 /// - **idle look**：静态 rest，每 25~50s 随机触发一次左右扫视
@@ -429,17 +140,16 @@ struct ToolOverlay: View {
 /// - **celebrate**：收到 `HermesPetTaskFinished`(success=true) 通知时，
 ///   连续 3 次 armsUp 庆祝（200/150ms），跟普通 working 区分开
 ///
-/// 这套 pose 切换本身就是 Clawd 的"生命感"，所以 Claude 模式下外部
+/// 这套 pose 切换本身就是 TARS 的生命感，因此外部
 /// **不再挂** `LifeSignsModifier`（scaleEffect 会让像素艺术插值变糊）
-struct ClaudeKnotSprite: View {
+struct TarsSprite: View {
     let isWorking: Bool
-    /// 灵动岛传进来的目标高度。Clawd 真实终端比例 1.5:1（不是 3:1），
-    /// 这里取 1.15 倍让它比常规图标略大 15% 显眼一点
+    /// 灵动岛传进来的目标高度。
     let size: CGFloat
-    /// 调色板 —— 默认 Anthropic 官方橙，用户自定义后由调用方传入
-    var palette: PetPalette = .clawdDefault
+    /// 调色板主色用于 TARS 信息屏和状态灯。
+    var palette: PetPalette = .tarsDefault
 
-    @State private var pose: ClawdPose = .rest
+    @State private var pose: TarsPose = .rest
     @State private var workingTask: Task<Void, Never>?
     @State private var celebrateTask: Task<Void, Never>?
     @State private var lookTask: Task<Void, Never>?
@@ -449,18 +159,16 @@ struct ClaudeKnotSprite: View {
     /// 工作中没有特定工具时显示默认扳手（.other）
     @State private var currentTool: ToolKind = .other
     /// 鼠标在屏幕的相对区域，由 MouseTrackingController 通知驱动。
-    /// idle 时 Clawd 的眼睛会跟着这个区域看（左/中/右）—— 让桌宠"活"起来
+    /// idle 时 TARS 会朝鼠标所在区域轻微倾斜。
     @State private var mouseArea: MouseTrackingController.MouseArea = .center
 
-    /// v2 像素更密 + 用户希望 Clawd 显得更大 → 系数从 1.15 拉到 1.4
-    /// （配合调用点 size 13→18 一起，整体放大约 50~70%）
-    private var clawdHeight: CGFloat { size * 1.4 }
+    private var tarsHeight: CGFloat { size * 1.5 }
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
             // followMouse 只在 idle（非工作、非庆祝）时打开：
             // 工作时 pose 在循环切换工具姿势，庆祝时 armsUp，都不希望被鼠标跟踪覆盖
-            ClawdView(pose: pose, height: clawdHeight,
+            TarsView(pose: pose, height: tarsHeight,
                       followMouse: !isWorking && celebrateTask == nil,
                       palette: palette)
 
@@ -516,8 +224,7 @@ struct ClaudeKnotSprite: View {
     }
 
     /// 鼠标驱动 idle 时的 pose
-    /// 现在眼睛在 ClawdView 内部做连续跟踪了，这里不再用 mouseArea 强制 lookLeft/Right —
-    /// 只保留 rest 时启动"随机偶尔扫视/伸懒腰"循环，让 Clawd 有自己的小动作
+    /// TarsView 内部会朝鼠标方向轻微倾斜；这里保留随机观察和展开动作。
     private func applyMousePoseIfIdle() {
         withAnimation(AnimTok.snappy) { pose = .rest }
         startIdleLookCycle()
@@ -590,7 +297,7 @@ struct ClaudeKnotSprite: View {
     }
 
     /// 不同工具对应的姿势循环序列：[(姿势, 持续时间 ns)]
-    private func workingFrames(for tool: ToolKind) -> [(ClawdPose, UInt64)] {
+    private func workingFrames(for tool: ToolKind) -> [(TarsPose, UInt64)] {
         switch tool {
         case .read:
             return [
@@ -660,7 +367,7 @@ struct ClaudeKnotSprite: View {
         }
     }
 
-    /// idle 时周期触发"左右看 / 偶尔伸懒腰"，让 Clawd 像个活物在打量周围
+    /// idle 时周期触发左右观察或展开机体。
     /// - 70% → 左右扫视（看左 + 看右）
     /// - 20% → 伸懒腰（armsUp 0.6s）
     /// - 10% → 单侧扫视（只看一边）
@@ -684,8 +391,8 @@ struct ClaudeKnotSprite: View {
                 } else {
                     let bothSides = roll < 9
                     let leftFirst = Bool.random()
-                    let firstSide: ClawdPose  = leftFirst ? .lookLeft  : .lookRight
-                    let secondSide: ClawdPose = leftFirst ? .lookRight : .lookLeft
+                    let firstSide: TarsPose  = leftFirst ? .lookLeft  : .lookRight
+                    let secondSide: TarsPose = leftFirst ? .lookRight : .lookLeft
 
                     pose = firstSide
                     try? await Task.sleep(nanoseconds: 500_000_000)
@@ -704,4 +411,3 @@ struct ClaudeKnotSprite: View {
         }
     }
 }
-

@@ -4,11 +4,11 @@ import CoreGraphics
 /// 系统空闲检测 —— 用 CGEventSource 看用户多久没动鼠标/键盘了。
 /// 3 分钟无任何输入 → 切换到 sleeping 态：
 ///   - 灵动岛圆点 dim + 飘 z
-///   - Claude 模式下 Clawd 跳出灵动岛、沿菜单栏下方漫步（彩蛋）
+///   - TARS 从灵动岛进入桌面巡视
 /// 用户重新动 → 立即恢复活跃态。
 ///
 /// 工作机制：每 15s tick 一次，状态变化时 post `HermesPetUserIdleChanged` 通知。
-/// 监听方：`IdleModeDot`（灵动岛左耳呼吸圆点）、`ClawdWalkController`（桌面漫步）
+/// 监听方：`IdleModeDot`、桌面漫步 controller
 @MainActor
 final class IdleStateTracker {
     static let shared = IdleStateTracker()

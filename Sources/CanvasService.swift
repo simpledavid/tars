@@ -16,7 +16,7 @@ import Foundation
 final class CanvasService {
 
     /// 用 ChatViewModel 持有的两个 OpenAI 兼容 client 之一来做"规划" + "微调意图识别"。
-    /// 优先用 directClient（在线 AI，零依赖），fallback 到 apiClient（Hermes Gateway）
+    /// 优先用 directClient（AI 助手，零依赖），fallback 到 apiClient（Hermes agent）
     private let textClient: APIClient
     private let codexClient: CodexClient
     private let storage: StorageManager

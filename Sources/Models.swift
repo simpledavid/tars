@@ -82,7 +82,7 @@ enum MessageRole: String, Codable {
     var displayName: String {
         switch self {
         case .user: return "你"
-        case .assistant: return "Hermes"
+        case .assistant: return "Tars"
         case .system: return "System"
         }
     }
@@ -106,6 +106,7 @@ struct Conversation: Identifiable, Codable, Equatable {
     var messages: [ChatMessage]
     /// 该对话锁定的 AI 后端。创建时设置，发了第一条 user 消息后就锁死不可改
     var mode: AgentMode
+    var assistantEngine: OnlineAIAgent?
     /// 对话类型（普通聊天 / 画布工作区）。canvas 时 `canvas` 字段有值
     var kind: ConversationKind
     /// 画布工作区数据 —— 仅 kind=.canvas 时有值。每个画布独立绑定一个 board
@@ -127,6 +128,7 @@ struct Conversation: Identifiable, Codable, Equatable {
          title: String,
          messages: [ChatMessage] = [],
          mode: AgentMode = .directAPI,
+         assistantEngine: OnlineAIAgent? = nil,
          kind: ConversationKind = .chat,
          canvas: CanvasBoard? = nil,
          hasUnread: Bool = false,
@@ -137,6 +139,7 @@ struct Conversation: Identifiable, Codable, Equatable {
         self.title = title
         self.messages = messages
         self.mode = mode
+        self.assistantEngine = assistantEngine
         self.kind = kind
         self.canvas = canvas
         self.hasUnread = hasUnread
@@ -147,7 +150,7 @@ struct Conversation: Identifiable, Codable, Equatable {
 
     // hasUnread / mode / kind / canvas 参与序列化；isStreaming 是内存态，重启后归 false
     private enum CodingKeys: String, CodingKey {
-        case id, title, messages, createdAt, updatedAt, hasUnread, mode, kind, canvas
+        case id, title, messages, createdAt, updatedAt, hasUnread, mode, kind, canvas, assistantEngine
     }
 
     init(from decoder: Decoder) throws {
@@ -165,6 +168,10 @@ struct Conversation: Identifiable, Codable, Equatable {
         } else {
             let legacy = UserDefaults.standard.string(forKey: "agentMode") ?? ""
             self.mode = AgentMode(rawValue: legacy) ?? .directAPI
+        }
+        self.assistantEngine = (try c.decodeIfPresent(String.self, forKey: .assistantEngine)).map(OnlineAIAgent.restored)
+        if self.assistantEngine == nil && self.messages.contains(where: { $0.role == .user }) {
+            self.assistantEngine = .opencode
         }
         // 旧版 JSON 没有 kind 字段 —— 默认 .chat 保持兼容
         if let rawKind = try? c.decode(String.self, forKey: .kind),
@@ -304,8 +311,8 @@ enum CanvasElementStatus: String, Codable {
 let kMaxConversations = 8
 
 /// 桌宠当前跟谁聊：
-/// - **在线 AI**：直连第三方服务商（DeepSeek / 智谱 / Kimi / MiniMax / OpenAI 等），
-///   可选 opencode / hermes / openclaw agent 层，只要 API Key 就能用
+/// - **AI 助手**：直连第三方服务商（DeepSeek / 智谱 / Kimi / MiniMax / OpenAI 等），
+///   可选 OpenAI Agents API 或 opencode；Claude/Codex CLI 位于高级设置
 /// - **Claude Code CLI** / **OpenAI Codex CLI**：本地子进程，能读写文件 / 跑命令 / 生图
 enum AgentMode: String, Codable, CaseIterable, Identifiable {
     case directAPI  = "direct_api"
@@ -316,7 +323,7 @@ enum AgentMode: String, Codable, CaseIterable, Identifiable {
 
     var label: String {
         switch self {
-        case .directAPI:  return "在线 AI"
+        case .directAPI:  return "AI 助手"
         case .claudeCode: return "Claude Code"
         case .codex:      return "Codex"
         }
@@ -331,84 +338,23 @@ enum AgentMode: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-/// 在线 AI 模式下可选的 agent 层。
-/// - `none`：不套 agent，直接把消息发给用户选的服务商模型
-/// - `opencode`：走 bundled opencode runtime，具备读写文件 / 命令 / 联网等工具能力
-/// - `hermes` / `openClaw`：仍走服务商模型，但注入对应 agent 身份与行为提示
+/// Legacy runtime choices migrate to opencode; only supported backends are selectable.
 enum OnlineAIAgent: String, Codable, CaseIterable, Identifiable {
-    case none
+    case agentsAPI = "openai_agents"
     case opencode
-    case hermes
-    case openClaw = "openclaw"
-
     static let defaultsKey = "onlineAIAgent"
-
+    static var selectableCases: [Self] { [.agentsAPI, .opencode] }
+    static func restored(_ raw: String?) -> Self { Self(rawValue: raw ?? "") ?? .opencode }
     var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .none:     return "默认模型"
-        case .opencode: return "opencode"
-        case .hermes:   return "Hermes"
-        case .openClaw: return "OpenClaw"
-        }
-    }
-
-    var iconName: String {
-        switch self {
-        case .none:     return "circle"
-        case .opencode: return "cube.transparent.fill"
-        case .hermes:   return "sparkle"
-        case .openClaw: return "terminal.fill"
-        }
-    }
-
-    var requiresDirectProviderConfig: Bool {
-        switch self {
-        case .opencode, .hermes, .openClaw:
-            return false
-        case .none:
-            return true
-        }
-    }
-
+    var label: String { self == .agentsAPI ? "OpenAI Agents API" : "opencode" }
+    var iconName: String { self == .agentsAPI ? "sparkles" : "cube.transparent.fill" }
+    var requiresDirectProviderConfig: Bool { self == .opencode }
     var caption: String {
-        switch self {
-        case .none:
-            return "不启用 agent，直接使用当前服务商与模型。"
-        case .opencode:
-            return "启用本地 opencode agent runtime，可读写文件、跑命令、联网搜索。"
-        case .hermes:
-            return "连接本地 Hermes Gateway，作为在线 AI 的本地 agent 运行。"
-        case .openClaw:
-            return "调用本机 openclaw 命令，作为在线 AI 的本地 agent 运行。"
-        }
+        self == .agentsAPI
+            ? "Beta · OpenAI 管理会话与调度，本机执行器处理文件和命令。使用独立的 OpenAI 密钥。"
+            : "本地 opencode runtime，使用你配置的服务商模型与 API Key。"
     }
-
-    var directSystemInstructions: String {
-        switch self {
-        case .none:
-            return """
-            当前 Agent：未选择。你直接以当前服务商模型身份回答。
-            """
-        case .opencode:
-            return """
-            当前 Agent：opencode。此路径通常由本地 opencode runtime 接管；如果你在直连接口中收到此提示，请保持简洁并说明需要工具能力时应切回 opencode agent。
-            """
-        case .hermes:
-            return """
-            当前 Agent：Hermes。
-            你是在线 AI 模式中的 Hermes agent，风格是快速、清晰、会主动拆解任务。
-            你当前通过服务商模型直接回复，不具备本地文件读写或命令执行能力；用户需要本地工具时，提示切到 opencode / Claude Code / Codex。
-            """
-        case .openClaw:
-            return """
-            当前 Agent：OpenClaw。
-            你是在线 AI 模式中的 OpenClaw agent，偏工程执行、代码审查、步骤规划和高信号反馈。
-            你当前通过服务商模型直接回复，不具备本地文件读写或命令执行能力；用户需要本地工具时，提示切到 opencode / Claude Code / Codex。
-            """
-        }
-    }
+    var directSystemInstructions: String { TarsPersonality.instructions }
 }
 
 // MARK: - API Models (OpenAI-compatible, 支持 multimodal)

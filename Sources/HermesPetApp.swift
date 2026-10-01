@@ -7,7 +7,19 @@ struct HermesPetApp: App {
 
     var body: some Scene {
         Settings {
-            EmptyView()
+            TarsSettingsScene(delegate: appDelegate)
+        }
+    }
+}
+
+private struct TarsSettingsScene: View {
+    @ObservedObject var delegate: AppDelegate
+
+    var body: some View {
+        if let viewModel = delegate.viewModel {
+            SettingsView(viewModel: viewModel)
+        } else {
+            ProgressView("正在启动 Tars…").frame(width: 620, height: 460)
         }
     }
 }
@@ -15,10 +27,10 @@ struct HermesPetApp: App {
 // MARK: - App Delegate
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var statusItem: NSStatusItem?
     private var chatWindow: ChatWindowController?
-    private var viewModel: ChatViewModel?
+    @Published private(set) var viewModel: ChatViewModel?
     private var islandController: DynamicIslandController?
     /// Permission UI 独立窗口控制器（v1.3+，监听 NotificationCenter 自驱）
     private var permissionWindowController: PermissionWindowController?
@@ -38,15 +50,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task.detached(priority: .utility) {
             _ = await CLIAvailability.claudeAvailable()
             _ = await CLIAvailability.codexAvailable()
-            _ = await CLIAvailability.openClawAvailable()
             // 探测完成后回到主线程让 connectionStatus 用最新路径再检一次
             await MainActor.run { [weak self] in
                 self?.viewModel?.checkConnection()
             }
         }
 
-        // 在线 AI 的 opencode agent 是可选项：只有用户选择 opencode 时才预启动 runtime。
-        // 未选择 agent 时，在线 AI 直接走服务商模型，不依赖本地 opencode。
+        // AI 助手的 opencode agent 是可选项：只有用户选择 opencode 时才预启动 runtime。
+        // 未选择 agent 时，AI 助手直接走服务商模型，不依赖本地 opencode。
         if UserDefaults.standard.string(forKey: OnlineAIAgent.defaultsKey) == OnlineAIAgent.opencode.rawValue {
             Task.detached(priority: .utility) {
                 do {
@@ -128,7 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 菜单栏图标：左键切换窗口，右键弹菜单（含"退出"）
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = item.button {
-            button.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Hermes 桌宠")
+            button.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Tars")
             button.action = #selector(handleStatusItemClick(_:))
             button.target = self
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -187,8 +198,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 触发字幕窗 controller 初始化（init 时自己注册 Voice 通知，不需要 AppDelegate 后续维护）
         _ = VoiceTranscriptOverlayController.shared
 
-        // Clawd 头顶情绪气泡 controller —— 同样在 init 注册通知
-        _ = ClawdBubbleOverlayController.shared
+        // TARS 状态气泡 controller
+        _ = TarsBubbleOverlayController.shared
 
         // 灵动岛下方选项菜单 —— AI 输出编号列表时弹出，让用户从灵动岛位置直接选
         _ = ChoiceMenuOverlayController.shared
@@ -200,14 +211,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         PinCardController.shared.bootstrap()
 
-        // 全局鼠标跟踪 —— Clawd 的眼睛跟着鼠标看
+        // 全局鼠标跟踪 —— TARS 会朝鼠标方向轻微倾斜
         MouseTrackingController.shared.start()
 
-        // 系统 idle 检测 —— 3min 无活动 → 灵动岛圆点 dim + 飘 z + Clawd 漫步触发
+        // 系统 idle 检测 —— 3min 无活动 → 灵动岛圆点 dim + TARS 漫步触发
         IdleStateTracker.shared.start()
 
-        // Clawd 桌面漫步彩蛋 —— Claude 模式 + idle + 启用 → 沿菜单栏下方往返散步
-        ClawdWalkController.shared.start(viewModel: vm)
+        // TARS 桌面漫步 —— idle 或自由活动模式下沿菜单栏下方巡视
+        TarsWalkController.shared.start(viewModel: vm)
 
         // 用户活动记录 —— 持续记录用户在用什么 app / 窗口、键盘节奏，让 AI 能"看见"用户做什么。
         // 默认开启（首次会弹 Accessibility 权限框，用户可在设置里关）。
@@ -228,7 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
-        // Clawd 桌面漫步上点击 → 打开聊天窗口
+        // TARS 桌面漫步上点击 → 打开聊天窗口
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleOpenChatRequested(_:)),
@@ -252,7 +263,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ActivityRecorder.shared.stop()
     }
 
-    /// Clawd 桌面漫步上单击 / 双击都会触发此通知，统一回到打开聊天窗口
+    /// TARS 桌面漫步上单击 / 双击都会触发此通知，统一打开聊天窗口
     @objc private func handleOpenChatRequested(_ note: Notification) {
         // 如果当前没在 chat 窗口（比如断连状态），同时检查一次连接
         if let vm = viewModel, case .disconnected = vm.connectionStatus {
@@ -263,13 +274,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         toggleChatWindow()
     }
 
-    /// AI 回复完成时的音效反馈（跟按住语音的 "duang" 区分）
+    /// AI 回复完成时的音效反馈（跟按住语音的 "duang" 区分）。
+    /// 只有 ChatViewModel 发出的上层完成事件才带 playSound=true；底层 runtime / 子进程
+    /// 也会发 HermesPetTaskFinished 给灵动岛做动画收尾，但那些不能触发声音。
     @objc private func handleTaskFinishedSound(_ note: Notification) {
         let success = (note.userInfo?["success"] as? Bool) ?? false
+        let shouldPlaySound = (note.userInfo?["playSound"] as? Bool) ?? false
         guard success else { return }   // 失败/取消静默，避免烦人
-        let soundName = UserDefaults.standard.string(forKey: "voiceFinishSound") ?? "Glass"
-        guard !soundName.isEmpty else { return }
-        NSSound(named: soundName)?.play()
+        guard shouldPlaySound else { return }
+        SoundManager.play(.voiceFinish)
     }
 
     @objc func toggleFromMenuBar() {
@@ -332,7 +345,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(.separator())
 
-        let quitItem = NSMenuItem(title: "退出 Hermes 桌宠", action: #selector(quitApp), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "退出 Tars", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 
@@ -517,7 +530,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 button.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Hermes — 已断开")
                 button.contentTintColor = .systemRed
             case .unknown:
-                button.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Hermes 桌宠")
+                button.image = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Tars")
                 button.contentTintColor = .tertiaryLabelColor
             }
         }

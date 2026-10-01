@@ -325,7 +325,7 @@ struct ResponseSummaryCardView: View {
     private var palette: PetPalette { paletteStore.palette(for: state.mode) }
 
     private var petName: String {
-        return "Clawd"
+        return "TARS"
     }
 
     /// 相对时间显示
@@ -399,7 +399,7 @@ struct ResponseSummaryCardView: View {
     /// 顶部彩色横梁 (32pt 高)：sprite + 桌宠名 + " · 时间" + × 关闭
     private var headerStrip: some View {
         HStack(spacing: 8) {
-            miniSprite(mode: state.mode, height: 20, palette: palette)
+            miniSprite(mode: state.mode, height: 28, palette: palette)
 
             Text(petName)
                 .font(.system(size: 12, weight: .semibold))
@@ -473,11 +473,11 @@ struct ResponseSummaryCardView: View {
         }
     }
 
-    /// 按 mode 渲染对应桌宠迷你 sprite (20pt 高 × 1.5 宽 = 30pt)
+    /// 摘要卡里的 TARS 迷你形象。
     @ViewBuilder
     private func miniSprite(mode: AgentMode, height: CGFloat, palette: PetPalette) -> some View {
-        ClawdView(pose: .rest, height: height, isWalking: false, palette: palette)
-            .frame(width: height * 1.5, height: height)
+        TarsView(pose: .rest, height: height, isWalking: false, palette: palette)
+            .frame(width: height * 1.2, height: height)
     }
 }
 

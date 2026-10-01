@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// 4 种桌宠的调色板 —— 让用户为每个 mode 单独自定义"主色"。
+/// TARS 机器人信息屏与状态灯的调色板。
 ///
 /// 设计：用户只调主色一种，其他派生色（顶高光、底阴影）由主色自动 HSB lighten/darken 派生，
 /// 这样既能给桌宠换色，又不要求用户对每个色板都手工调一遍。
@@ -10,8 +10,6 @@ import AppKit
 /// - `derivedTop`：主色 +12% brightness（左上光源高光）
 /// - `derivedBottom`：主色 -15% brightness（底部阴影 / 体积感）
 ///
-/// 各 sprite 的其他色（鬃毛 / 翅膀 / 蹄子 / 屏幕黑 / 火焰 / LED 等）保持默认不参与调色，
-/// 避免用户改完后失去 sprite 的视觉辨识度。
 struct PetPalette: Codable, Equatable {
     /// 主色（16 进制 hex，无 # 前缀，如 "DE886D"）
     var primaryHex: String
@@ -37,8 +35,8 @@ struct PetPalette: Codable, Equatable {
 
     // —— 默认 palette ——
 
-    /// Clawd 螃蟹默认 Anthropic 橙 #DE886D
-    static let clawdDefault = PetPalette(primaryHex: "DE886D")
+    /// 冷蓝信息屏；金属机体的颜色由统一绘制器独立定义。
+    static let tarsDefault = PetPalette(primaryHex: "8DDCFF")
 
     private static let fallbackColor = Color.gray
 }
@@ -51,34 +49,41 @@ struct PetPalette: Codable, Equatable {
 final class PetPaletteStore {
     static let shared = PetPaletteStore()
 
-    var claudePalette: PetPalette
+    var tarsPalette: PetPalette
 
     private init() {
         let stored: PetPalette? = {
             guard let data = UserDefaults.standard.data(forKey: Self.storageKey) else { return nil }
             return try? JSONDecoder().decode(PetPalette.self, from: data)
         }()
-        self.claudePalette = stored ?? .clawdDefault
+        // 只迁移历史默认色，保留用户自定义的信息屏颜色。
+        let legacyDefaults = ["DE886D", "59D0FF"]
+        if let stored, legacyDefaults.contains(stored.primaryHex.uppercased()) {
+            self.tarsPalette = .tarsDefault
+            save()
+        } else {
+            self.tarsPalette = stored ?? .tarsDefault
+        }
     }
 
     func palette(for mode: AgentMode) -> PetPalette {
-        return claudePalette
+        return tarsPalette
     }
 
     func updatePalette(for mode: AgentMode, _ palette: PetPalette) {
-        claudePalette = palette
+        tarsPalette = palette
         save()
     }
 
     func updatePrimary(for mode: AgentMode, color: Color) {
-        var p = claudePalette
+        var p = tarsPalette
         p.primaryHex = color.hexString
-        claudePalette = p
+        tarsPalette = p
         save()
     }
 
     func resetToDefault(for mode: AgentMode) {
-        claudePalette = .clawdDefault
+        tarsPalette = .tarsDefault
         save()
     }
 
@@ -87,7 +92,7 @@ final class PetPaletteStore {
     private static let storageKey = "petPalette.v2"
 
     private func save() {
-        if let data = try? JSONEncoder().encode(claudePalette) {
+        if let data = try? JSONEncoder().encode(tarsPalette) {
             UserDefaults.standard.set(data, forKey: Self.storageKey)
         }
     }
@@ -151,11 +156,11 @@ extension Color {
 
 /// 桌面漫步桌宠缩放因子。
 ///
-/// **只影响桌面漫步 sprite**（ClawdWalkController 的窗口大小 + 内部 sprite 高度），
+/// **只影响桌面漫步 sprite**（TarsWalkController 的窗口大小 + 内部 sprite 高度），
 /// 不影响灵动岛 sprite（受刘海物理高度约束，加 scale 反而不协调）。
 ///
 /// 状态：UserDefaults 持久化（key = `petWalkSizeScale`），默认 1.0。
-/// 访问：`@AppStorage("petWalkSizeScale")` 在 ClawdWalkOverlay / SettingsView 都能用。
+/// 访问：`@AppStorage("petWalkSizeScale")` 在 TarsWalkOverlay / SettingsView 都能用。
 enum PetWalkSizeScale {
     static let storageKey = "petWalkSizeScale"
 
@@ -165,7 +170,7 @@ enum PetWalkSizeScale {
 
     static let `default`: Double = 1.0
 
-    /// 缩放变化时广播 —— ClawdWalkController 监听后 setFrame 已显示的桌宠窗口
+    /// 缩放变化时广播 —— TarsWalkController 监听后 setFrame 已显示的桌宠窗口
     static let didChangeNotification = Notification.Name("HermesPetWalkSizeScaleChanged")
 
     /// 找到当前 scale 最接近的预设档位 index（容差 0.02）；找不到返回 -1

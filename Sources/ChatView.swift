@@ -213,7 +213,7 @@ struct ChatView: View {
 
     private var headerView: some View {
         HStack(spacing: 6) {
-            // 画布对话：显示混合模式标签（规划走在线 AI，生图走 Codex）
+            // 画布对话：显示混合模式标签（规划走 AI 助手，生图走 Codex）
             // 普通对话：mode 表达完全由 PetHeaderStrip 接管（左侧大 sprite + 右侧 4 只 mode rail），
             //         这里直接铺 ConversationTab，[+] 继承当前 active tab 的 mode 新建
             if isActiveCanvas {
@@ -292,10 +292,10 @@ struct ChatView: View {
         !viewModel.isLoading
     }
 
-    /// 新用户引导卡显示条件：在线 AI 模式 + 没填 API Key（dmg 分发场景对方默认就在这个 mode）。
+    /// 新用户引导卡显示条件：AI 助手模式 + 没填 API Key（dmg 分发场景对方默认就在这个 mode）。
     /// 让对方第一次打开就知道"要去设置里选服务商 + 配置 Key 才能聊天"
     private var showOnboardingCard: Bool {
-        viewModel.agentMode == .directAPI && viewModel.directAPIKey.isEmpty
+        viewModel.agentMode == .directAPI && (viewModel.currentAssistantEngine == .opencode ? viewModel.directAPIKey.isEmpty : (try? AgentsCredentials.load()) == nil)
     }
 
     private var suggestionItems: [(icon: String, text: String, prompt: String)] {
@@ -642,22 +642,11 @@ struct WelcomeView: View {
     }
 
     private var welcomeTitle: String {
-        switch mode {
-        case .directAPI:  return "在线 AI"
-        case .claudeCode: return "Claude Code"
-        case .codex:      return "Codex"
-        }
+        "Tars"
     }
 
     private var welcomeSubtitle: String {
-        switch mode {
-        case .directAPI:
-            return "随时找我聊天 / 截图分析 / 翻译 / 写作\n语音问问题：按住 ⌘⇧V 说话"
-        case .claudeCode:
-            return "我能改文件、跑命令、读代码\n动手能力最强的 AI"
-        case .codex:
-            return "写代码 + 生成图片\n擅长视觉创作的 OpenAI 助手"
-        }
+        TarsPersonality.emptyConversationHint
     }
 }
 
@@ -983,11 +972,11 @@ struct AddTabButton: View {
     }
 }
 
-// MARK: - 画布模式 Badge（混合：规划用在线 AI，生图用 Codex）
+// MARK: - 画布模式 Badge（混合：规划用 AI 助手，生图用 Codex）
 //
 // 画布对话本质是"混合 mode"，单一 mode 字段表达不准。这个 badge 明确告诉用户：
 // - 这是画布工作区（不是普通聊天）
-// - 文字规划用在线 AI（速度 + 中文好）
+// - 文字规划用 AI 助手（速度 + 中文好）
 // - 图片生成用 Codex（GPT Image 2 中文渲染好）
 
 struct CanvasModeBadge: View {
@@ -1002,7 +991,7 @@ struct CanvasModeBadge: View {
                 Text("画布")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.primary)
-                Text("在线 AI · Codex")
+                Text("AI 助手 · Codex")
                     .font(.system(size: 8, weight: .medium))
                     .foregroundStyle(.secondary)
             }
@@ -1017,7 +1006,7 @@ struct CanvasModeBadge: View {
             Capsule()
                 .stroke(Color.indigo.opacity(0.25), lineWidth: 0.5)
         )
-        .help("画布工作区 · 规划用在线 AI，图片生成走 Codex（GPT Image 2）")
+        .help("画布工作区 · 规划用 AI 助手，图片生成走 Codex（GPT Image 2）")
     }
 }
 
@@ -1079,7 +1068,7 @@ struct HeaderToggleButton: View {
 
 // MARK: - 新用户 Onboarding 卡片
 //
-// 出现条件（由 ChatView.showOnboardingCard 决定）：Hermes 模式 + apiKey 为空。
+// 出现条件（由 ChatView.showOnboardingCard 决定）：AI 助手 + directAPIKey 为空。
 // 设计：轻量、可关闭（点击直接跳设置面板），不挡住快捷启动卡片。
 // 给把 dmg 分享给朋友的场景做的 —— 对方第一次打开就能看到"该去哪儿配 Key"的提示
 
@@ -1097,10 +1086,10 @@ struct OnboardingCard: View {
                     .foregroundStyle(tint)
                     .frame(width: 22)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("先选个 AI 服务商再聊天")
+                    Text("先配置 AI 助手再聊天")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(.primary)
-                    Text("点这里打开设置 · 内置 DeepSeek / 智谱 / Kimi / MiniMax / OpenAI 预设")
+                    Text("点这里打开设置 · OpenAI Agents API / opencode")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)

@@ -4,7 +4,7 @@ import SwiftUI
 ///
 /// 这块区域以前被 NSWindow 的隐形 titlebar 占着 (.titled styleMask + .fullSizeContentView)
 /// —— 视觉上一片空白，仅用作窗口拖动。现在让 SwiftUI 内容延伸到那里，承载：
-///   1. 当前 mode 对应的迷你桌宠 sprite (Clawd/云朵/小马/coco)
+///   1. Tars 机器人迷你状态形象
 ///   2. 桌宠名 + 状态文本 (idle / 思考中 / 工具调用中 / 完成)
 ///   3. 右侧工具图标 + M/N 步进度
 ///   4. **Permission 决策面**（聊天窗开着时收到 HermesPetPermissionAsked → 展开成 90pt 卡片）
@@ -57,15 +57,15 @@ struct PetHeaderStrip: View {
     /// sprite 离左边的安全 padding —— traffic light 三个按钮 isHidden=true 后无 hit region，
     /// 留 10pt 避免 sprite 跟窗口左上圆角粘脸；窗口圆角 14pt，10pt sprite leading 不会被裁
     private static let spriteLeadingPad: CGFloat = 10
-    /// sprite 视觉高度。strip 28pt 上下各留 4pt padding -> 20pt 可用
-    private static let spriteHeight: CGFloat = 20
+    /// TARS 横向轮式形态需要更大的辨识面积。
+    private static let spriteHeight: CGFloat = 24
 
     private var mode: AgentMode { viewModel.agentMode }
     private var palette: PetPalette { paletteStore.palette(for: mode) }
 
     /// 桌宠中文名 —— idle 时显示在状态文本前作为身份标识
     private var petName: String {
-        return "Clawd"
+        return "TARS"
     }
 
     /// 状态描述文本 (不含桌宠名)。permission pending 时会被 permission 卡片覆盖，此处仍计算给"在岛上等待"场景
@@ -95,7 +95,7 @@ struct PetHeaderStrip: View {
     }
 
     /// sprite 是否切到 armsUp pose（permission pending 时举手"求救"）
-    private var spritePose: ClawdPose {
+    private var spritePose: TarsPose {
         inPermissionMode ? .armsUp : .rest
     }
 
@@ -295,7 +295,7 @@ struct PetHeaderStrip: View {
                     .scaleEffect(spotPulse ? 1.10 : 0.92)
                     .blur(radius: 4)
                 spriteView
-                    .frame(width: Self.spriteHeight * 1.5, height: Self.spriteHeight)
+                    .frame(width: Self.spriteHeight * 1.25, height: Self.spriteHeight)
             }
             .offset(y: spriteJumping ? -3 : 0)
             .animation(.spring(response: 0.3, dampingFraction: 0.55), value: spriteJumping)
@@ -324,6 +324,20 @@ struct PetHeaderStrip: View {
             .animation(.easeInOut(duration: 0.2), value: statusText)
 
             Spacer(minLength: 4)
+
+            Menu {
+                Button("新建 AI 助手对话") { viewModel.newConversation(mode: .directAPI) }
+                if viewModel.advancedCLIEnabled {
+                    Divider()
+                    Button("新建 Claude Code 对话") { viewModel.newConversation(mode: .claudeCode) }
+                    Button("新建 Codex 对话") { viewModel.newConversation(mode: .codex) }
+                }
+            } label: {
+                Text(mode == .directAPI ? viewModel.currentAssistantEngine.label : mode.label)
+                    .font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            .help("当前引擎 · 新建对话")
 
             // 右侧工具图标 + 进度（permission 展开时隐藏 —— 决策栏更显眼）
             if let kind = currentToolKind, !inPermissionMode {
@@ -491,13 +505,13 @@ struct PetHeaderStrip: View {
     private var spriteView: some View {
         switch mode {
         case .claudeCode:
-            ClawdView(pose: spritePose, height: Self.spriteHeight,
+            TarsView(pose: spritePose, height: Self.spriteHeight,
                       isWalking: spriteIsWorking, palette: palette)
         case .directAPI:
-            ClawdView(pose: spritePose, height: Self.spriteHeight,
+            TarsView(pose: spritePose, height: Self.spriteHeight,
                       isWalking: spriteIsWorking, palette: palette)
         case .codex:
-            ClawdView(pose: spritePose, height: Self.spriteHeight,
+            TarsView(pose: spritePose, height: Self.spriteHeight,
                       isWalking: spriteIsWorking, palette: palette)
         }
     }
@@ -539,10 +553,3 @@ private extension PermissionDecision {
         }
     }
 }
-
-// MARK: - 右侧 4 只 mini sprite mode 切换器
-
-/// PetHeaderStrip 最右侧的 mode 入口栏：4 只 mini sprite 横排，按 AgentMode.allCases 顺序排
-/// （hermes / directAPI / claudeCode / codex）。点击任何一只 = 新建对应 mode 对话。
-///
-/// 设计要点：

@@ -51,7 +51,7 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.contentMinSize = NSSize(width: 360, height: 360)
         window.contentMaxSize = NSSize(width: 1400, height: 1600)
-        window.title = "HermesPet"
+        window.title = "Tars"
         window.backgroundColor = .clear
         window.isOpaque = false
         window.hasShadow = true

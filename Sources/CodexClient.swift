@@ -24,6 +24,7 @@ final class CodexClient: @unchecked Sendable {
     private var _pendingImages: [Data] = []
     private let sessionLock = NSLock()
     private static let sessionMapKey = "codexSessionIDsByConversationID"
+    private static let directoryMapKey = "codexSessionDirectoriesByConversationID"
 
     /// stream 完成后由 ViewModel 调用，消费本次生成的图片
     func takeGeneratedImages() -> [Data] {
@@ -42,6 +43,21 @@ final class CodexClient: @unchecked Sendable {
     /// 兼容旧接口（多 mode 共用 ChatViewModel.clearChat 调用）
     func resetSession() {}
 
+    private func invalidateSessionIfDirectoryChanged(conversationID: String?, directory: String) {
+        guard let conversationID else { return }
+        sessionLock.lock()
+        defer { sessionLock.unlock() }
+        var directories = UserDefaults.standard.dictionary(forKey: Self.directoryMapKey) as? [String: String] ?? [:]
+        // Old sessions have no recorded cwd; rebuild once rather than resuming in the wrong project.
+        if directories[conversationID] != directory {
+            var sessions = UserDefaults.standard.dictionary(forKey: Self.sessionMapKey) as? [String: String] ?? [:]
+            sessions.removeValue(forKey: conversationID)
+            UserDefaults.standard.set(sessions, forKey: Self.sessionMapKey)
+            directories[conversationID] = directory
+            UserDefaults.standard.set(directories, forKey: Self.directoryMapKey)
+        }
+    }
+
     /// 清掉某个 HermesPet conversation 绑定的 Codex session。
     /// 用户清空/关闭对话后，后续再发应该是一个干净的新 Codex 会话。
     func resetSession(conversationID: String) {
@@ -50,6 +66,9 @@ final class CodexClient: @unchecked Sendable {
         var map = UserDefaults.standard.dictionary(forKey: Self.sessionMapKey) as? [String: String] ?? [:]
         map.removeValue(forKey: conversationID)
         UserDefaults.standard.set(map, forKey: Self.sessionMapKey)
+        var directories = UserDefaults.standard.dictionary(forKey: Self.directoryMapKey) as? [String: String] ?? [:]
+        directories.removeValue(forKey: conversationID)
+        UserDefaults.standard.set(directories, forKey: Self.directoryMapKey)
     }
 
     /// 流式问答。
@@ -65,7 +84,10 @@ final class CodexClient: @unchecked Sendable {
     ///   画布进度由 CanvasView toolbar 独立展示。
     func streamCompletion(messages: [ChatMessage],
                           conversationID: String? = nil,
-                          suppressIslandUpdates: Bool = false) -> AsyncThrowingStream<String, Error> {
+                          suppressIslandUpdates: Bool = false,
+                          workingDirectory: String? = nil) -> AsyncThrowingStream<String, Error> {
+        let directory = workingDirectory ?? workingDir
+        invalidateSessionIfDirectoryChanged(conversationID: conversationID, directory: directory)
         let existingSessionID = sessionID(for: conversationID)
         let prompt = buildPrompt(messages: messages, isResume: existingSessionID != nil)
         let inputImages = collectInputImagePaths(from: messages)
@@ -74,7 +96,8 @@ final class CodexClient: @unchecked Sendable {
             imageFiles: inputImages,
             conversationID: conversationID,
             sessionID: existingSessionID,
-            suppressIslandUpdates: suppressIslandUpdates
+            suppressIslandUpdates: suppressIslandUpdates,
+            workingDirectory: directory
         )
     }
 
@@ -116,7 +139,9 @@ final class CodexClient: @unchecked Sendable {
     private static let clientHints = """
 
 [客户端约定 · 仅供你理解上下文，不要在回复里引用这段]
-当前运行环境是 HermesPet 桌面客户端（纯文本聊天 UI）。如果你想让用户做选择，请直接在回复正文里用 Markdown 编号列表：
+\(TarsPersonality.clientContext)
+
+当前运行环境是 Tars 桌面客户端（纯文本聊天 UI）。如果你想让用户做选择，请直接在回复正文里用 Markdown 编号列表：
 1. 选项 A 的简短描述
 2. 选项 B 的简短描述
 客户端会把这种编号列表自动渲染成可点击的选项卡片，用户点击后会作为新消息发给你。
@@ -190,7 +215,8 @@ final class CodexClient: @unchecked Sendable {
                            imageFiles: [String] = [],
                            conversationID: String?,
                            sessionID: String?,
-                           suppressIslandUpdates: Bool = false) -> AsyncThrowingStream<String, Error> {
+                           suppressIslandUpdates: Bool = false,
+                           workingDirectory: String? = nil) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             // spawn 前快照 codex 的默认图片目录
             let codexImageDir = (NSHomeDirectory() as NSString)
@@ -232,7 +258,7 @@ final class CodexClient: @unchecked Sendable {
             }
             args.append(prompt)
             process.arguments = args
-            process.currentDirectoryURL = URL(fileURLWithPath: workingDir)
+            process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory ?? workingDir)
             process.standardInput = Self.nullInput
             // 透传环境变量并补齐 GUI App 缺失的 PATH；codex 自己读 ~/.codex/auth 凭据
             process.environment = CLIProcessEnvironment.make(executablePath: executablePath)

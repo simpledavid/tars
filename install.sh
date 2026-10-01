@@ -2,7 +2,7 @@
 # install.sh — 一键构建 + 覆盖安装到 /Applications + 启动
 #
 # 跟 build.sh / make-dmg.sh 的关系：
-#   build.sh       仅构建到 ~/Desktop/HermesPet/HermesPet.app（用 Apple Development 证书）
+#   build.sh       仅构建项目目录下的 Tars.app（用 Apple Development 证书）
 #   make-dmg.sh    打 ad-hoc 签名 DMG 给别人分发（接收方需手动右键打开）
 #   install.sh ← 你用：本地构建 + 覆盖装到 /Applications + 启动新版
 #
@@ -14,8 +14,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-APP_NAME="HermesPet"
-DISPLAY_NAME="Hermes 桌宠"
+APP_NAME="Tars"
+EXECUTABLE_NAME="HermesPet"
+DISPLAY_NAME="Tars"
 SOURCE="$SCRIPT_DIR/$APP_NAME.app"
 TARGET="/Applications/$DISPLAY_NAME.app"
 
@@ -24,15 +25,14 @@ echo "🏗️  构建中..."
 ./build.sh > /dev/null
 
 # 2. 退出在跑的版本（如果有）
-# 注意：用精确进程名匹配 ($APP_NAME)，不要用 .app 路径，
-# 因为 /Applications 下的 bundle 是 "Hermes 桌宠.app"（中文），跟 source 端 "HermesPet.app" 不一样。
+# 注意：进程名仍是兼容层可执行文件 HermesPet，不等于用户可见的 Tars.app。
 # 之前用 -f pattern 匹配 .app 路径会漏杀 → 旧进程残留 → install 完成但用户跑的还是旧代码。
-if pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+if pgrep -x "$EXECUTABLE_NAME" >/dev/null 2>&1; then
     echo "🛑 退出当前运行的 $DISPLAY_NAME..."
-    pkill -x "$APP_NAME" || true
+    pkill -x "$EXECUTABLE_NAME" || true
     # 等一下让进程完全退出，避免覆盖时占用
     for i in 1 2 3 4 5 6 7 8 9 10; do
-        if ! pgrep -x "$APP_NAME" >/dev/null 2>&1; then
+        if ! pgrep -x "$EXECUTABLE_NAME" >/dev/null 2>&1; then
             break
         fi
         sleep 0.2
@@ -51,6 +51,13 @@ fi
 
 # 3. 覆盖安装到 /Applications
 echo "📦 安装到 $TARGET..."
+# 清理历史旧名 app，bundle id 不变，因此权限和数据继续沿用。
+for legacy_target in "/Applications/Hermes 桌宠.app" "/Applications/OpenCrab.app"; do
+    if [ -d "$legacy_target" ]; then
+        echo "🧹 移除旧版「$(basename "$legacy_target")」..."
+        rm -rf "$legacy_target"
+    fi
+done
 rm -rf "$TARGET"
 cp -R "$SOURCE" "$TARGET"
 

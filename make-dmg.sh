@@ -6,8 +6,8 @@
 # - make-dmg.sh：分发场景，ad-hoc 签名（任何 Mac 都能跑，首次需要右键打开）
 #
 # 两份产物：
-# - dist/HermesPet-<版本>-AppleSilicon.dmg —— 内嵌 opencode darwin-arm64
-# - dist/HermesPet-<版本>-Intel.dmg        —— 内嵌 opencode darwin-x64
+# - dist/Tars-<版本>-AppleSilicon.dmg —— 内嵌 opencode darwin-arm64
+# - dist/Tars-<版本>-Intel.dmg        —— 内嵌 opencode darwin-x64
 #
 # 主二进制本身已经是 universal，所以两份只差内嵌的 opencode 二进制；
 # 分开打而不是 lipo 合成 universal opencode 的原因是后者会让 DMG 翻倍到 200MB+，
@@ -18,8 +18,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-APP_NAME="HermesPet"
-DISPLAY_NAME="Hermes 桌宠"
+APP_NAME="Tars"
+EXECUTABLE_NAME="HermesPet"
+DISPLAY_NAME="Tars"
 
 # 版本号从 Info.plist 自动读，避免脚本和 plist 漂移
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Info.plist)"
@@ -43,10 +44,40 @@ echo "🏗️  Release 构建 universal 主二进制（arm64 + x86_64）..."
 # 主二进制是 universal，两份 DMG 共用同一份；只有内嵌的 opencode 是 arch-specific
 swift build -c release --disable-sandbox --arch arm64 --arch x86_64
 
-BINARY="$BUILD_DIR/apple/Products/Release/$APP_NAME"
+BINARY="$BUILD_DIR/apple/Products/Release/$EXECUTABLE_NAME"
 
 # 内嵌的 opencode runtime 版本
 OPENCODE_VERSION="${OPENCODE_VERSION:-v1.15.1}"
+
+download_opencode_zip() {
+    local upstream_url="$1"
+    local output="$2"
+    # 国内网络访问 GitHub release asset 经常 HTTP2 framing / timeout。
+    # 默认优先走几个 GitHub 加速代理；全部失败再回官方源。
+    # 可手动覆盖：
+    #   OPENCODE_MIRROR_PREFIXES="https://your.proxy/" ./make-dmg.sh
+    local prefixes="${OPENCODE_MIRROR_PREFIXES:-https://ghfast.top/ https://gh-proxy.com/ https://gh.llkk.cc/}"
+    local urls=()
+    local prefix
+    for prefix in $prefixes; do
+        urls+=("${prefix}${upstream_url}")
+    done
+    urls+=("$upstream_url")
+
+    local url
+    for url in "${urls[@]}"; do
+        echo "   ↳ $url" >&2
+        if curl --http1.1 -fL --progress-bar \
+            --connect-timeout 20 --max-time 240 \
+            --retry 3 --retry-delay 2 --retry-all-errors \
+            -o "$output" "$url" >&2; then
+            return 0
+        fi
+        rm -f "$output"
+        echo "   ⚠️  这个源失败，换下一个..." >&2
+    done
+    return 1
+}
 
 # 下载对应架构 opencode 到缓存（首次跑会下载，之后复用）
 download_opencode() {
@@ -61,7 +92,7 @@ download_opencode() {
         mkdir -p "$cache_dir"
         local url="https://github.com/anomalyco/opencode/releases/download/${OPENCODE_VERSION}/opencode-${arch}.zip"
         local zip="$cache_dir/opencode-$arch.zip"
-        curl -fL --progress-bar -o "$zip" "$url" >&2
+        download_opencode_zip "$url" "$zip"
         # zip 里就一个 `opencode` 文件，解出来后改名以区分两个架构
         local tmp_dir="$cache_dir/tmp-$arch"
         rm -rf "$tmp_dir"
@@ -90,7 +121,7 @@ build_one_dmg() {
     rm -rf "$app_bundle"
     mkdir -p "$app_bundle/Contents/MacOS"
     mkdir -p "$app_bundle/Contents/Resources"
-    cp "$BINARY" "$app_bundle/Contents/MacOS/$APP_NAME"
+    cp "$BINARY" "$app_bundle/Contents/MacOS/$EXECUTABLE_NAME"
     cp "$SCRIPT_DIR/Info.plist" "$app_bundle/Contents/"
     echo "APPL????" > "$app_bundle/Contents/PkgInfo"
 
@@ -163,7 +194,7 @@ write_readme() {
     fi
 
     cat > "$staging/⚠️ 第一次打开请看我.txt" <<EOF
-首次打开 Hermes 桌宠
+首次打开 Tars
 ================================
 
 ${arch_hint}
@@ -171,15 +202,15 @@ ${arch_hint}
 由于这是开发版（未经 Apple 官方公证），macOS 会默认阻止运行。
 你需要做以下一次性操作：
 
-1. 把「Hermes 桌宠」拖到旁边的「应用程序」文件夹
+1. 把「Tars」拖到旁边的「应用程序」文件夹
 
-2. 在 启动台 / Spotlight 找到「Hermes 桌宠」
+2. 在 启动台 / Spotlight 找到「Tars」
    → 右键点击 → 选「打开」
    → 弹出警告时再点「打开」
 
 3. 如果右键打开还是被拦截：
    - 打开「系统设置 → 隐私与安全性」
-   - 在底部「安全」区域找到 "Hermes 桌宠 已被阻止"
+   - 在底部「安全」区域找到 "Tars 已被阻止"
    - 点「仍要打开」
 
 完成以上一次操作后，以后就能正常双击打开了。
@@ -192,7 +223,7 @@ ${arch_hint}
   Cmd+Shift+V  → 按住说话（push-to-talk），松开后自动发送
                   首次会请求"麦克风" + "语音识别"两个权限
 
-授权完任一权限后，建议完全退出 Hermes 桌宠（菜单栏右键 → 退出）
+授权完任一权限后，建议完全退出 Tars（菜单栏右键 → 退出）
 再重新打开一次，让新权限对进程生效。
 
 【v1.2.4 主要更新】
@@ -200,7 +231,7 @@ ${arch_hint}
   ▍新功能
   · 工具权限确认 UI —— 设置里开「工具调用前向我确认」开关后，
     AI 调工具前会在灵动岛下方弹卡片让你 允许 / 总是允许 / 拒绝；
-    在线 AI、Claude Code、Codex 三个模式都支持
+    AI 助手、Claude Code、Codex 三个模式都支持
 
   ▍体验优化
   · 输入框第一个字符不再失焦
@@ -210,21 +241,21 @@ ${arch_hint}
 
 【v1.2.3 沿用】
 
-  · 在线 AI 切换到 opencode HTTP API —— 启动延迟从 800ms 降到 50ms，
+  · AI 助手切换到 opencode HTTP API —— 启动延迟从 800ms 降到 50ms，
     彻底根治"(没有响应)" bug
   · vision 模型自动切换：拖图时按 provider 自动 override 到 vision 模型
-  · 云朵桌宠 vision 模式戴眼镜动画 / 长任务情绪气泡
+  · TARS 机器人长任务状态气泡
   · 错误态友好化：7 种关键词分类成可操作 hint
 
-【在线 AI 是 agent · 不需要装外部命令行工具】
+【AI 助手是 agent · 不需要装外部命令行工具】
 
-  内置 opencode (MIT 开源 agent runtime) 让"在线 AI"模式能真的读
+  内置 opencode (MIT 开源 agent runtime) 让"AI 助手"模式能真的读
   你的本地文件、跑命令、联网搜索、看图，跟 Claude Code / Codex
   同档能力。
 
 【最快上手】
 
-  打开 Hermes 桌宠 → 点齿轮 ⚙️ → "在线 AI" → 选服务商 → 粘 API Key
+  打开 Tars → 点齿轮 ⚙️ → "AI 助手" → 选服务商 → 粘 API Key
 
   推荐：Moonshot Kimi K2.6 中文体验好，agent 工具调用稳定。
 
@@ -246,7 +277,7 @@ ${arch_hint}
 【进阶：还能装 Claude Code / Codex】
   如果机器另外装了 claude / codex 命令行工具，
   点聊天窗顶部模式图标就能切到对应模式 —— 享受更强的 agent。
-  没装也不影响在线 AI 模式正常用。
+  没装也不影响 AI 助手模式正常用。
 EOF
 }
 

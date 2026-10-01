@@ -77,27 +77,35 @@ final class ChatViewModel {
     private struct PendingStreamRequest {
         let conversationID: String
         let assistantMessageID: String
-        let mode: AgentMode
-        let apiMessages: [ChatMessage]
+        let run: AgentRunRequest
+    }
+
+    var agentConfiguration = AgentConfiguration()
+    private var oneShotCount = 0
+    var hasAgentWork: Bool { conversations.contains(where: { $0.isStreaming }) || oneShotCount > 0 }
+
+    func saveAgentConfiguration(_ configuration: AgentConfiguration, memory: String) throws {
+        guard !hasAgentWork else {
+            throw AgentHarnessError.configuration("任务正在进行，请完成或取消后再修改 Agent 配置")
+        }
+        try configuration.validate()
+        guard memory.count <= 6_000 else {
+            throw AgentHarnessError.configuration("记忆最多 6,000 字符")
+        }
+        try AgentConfiguration.saveMemory(memory)
+        try configuration.save()
+        agentConfiguration = configuration
+        for conversation in conversations { harness.reset(conversationID: conversation.id) }
+        scheduleOpenCodeConfigReload()
     }
 
     // Settings
-    // Hermes Gateway 的配置（本地自托管 OpenAI 兼容 Server）
-    var apiBaseURL: String {
-        didSet { UserDefaults.standard.set(apiBaseURL, forKey: "apiBaseURL") }
-    }
-    var apiKey: String {
-        didSet { UserDefaults.standard.set(apiKey, forKey: "apiKey") }
-    }
-    var modelName: String {
-        didSet { UserDefaults.standard.set(modelName, forKey: "modelName") }
-    }
-
-    // 在线 AI（directAPI）的配置 —— 跟 Hermes 完全独立，
+    // AI 助手（directAPI）的模型驱动配置 —— 跟 Claude/Codex CLI 登录完全独立，
     // 用户分发给朋友的场景：只用配这一组就能聊
     var directAPIBaseURL: String {
         didSet {
             UserDefaults.standard.set(directAPIBaseURL, forKey: "directAPIBaseURL")
+            ModelDriverConfig.syncFromDefaults()
             scheduleOpenCodeConfigReload()
         }
     }
@@ -108,31 +116,39 @@ final class ChatViewModel {
             if !providerID.isEmpty {
                 UserDefaults.standard.set(directAPIKey, forKey: Self.directAPIKeyStorageKey(providerID: providerID))
             }
+            ModelDriverConfig.syncFromDefaults()
             scheduleOpenCodeConfigReload()
         }
     }
     var directAPIModel: String {
         didSet {
             UserDefaults.standard.set(directAPIModel, forKey: "directAPIModel")
+            ModelDriverConfig.syncFromDefaults()
             scheduleOpenCodeConfigReload()
         }
     }
-    /// 在线 AI 的回复偏好，默认平衡。最终仍会映射成 directAPIModel 发给 API。
+    /// AI 助手的回复偏好，默认平衡。最终仍会映射成 directAPIModel 发给 API。
     var directAPIResponsePreference: DirectResponsePreference {
         didSet { UserDefaults.standard.set(directAPIResponsePreference.rawValue, forKey: "directAPIResponsePreference") }
     }
-    /// 在线 AI 模式下的 agent 选择。
-    /// 默认 `.none`：直接走服务商模型；选择 opencode 时才启用本地 agent runtime。
+    /// AI 助手模式下的本地 agent/runtime 选择。
+    /// 除 Claude/Codex 外都统一使用 directAPI 服务商配置；选择 opencode 时额外启用本地 runtime。
     var onlineAIAgent: OnlineAIAgent {
         didSet {
             UserDefaults.standard.set(onlineAIAgent.rawValue, forKey: OnlineAIAgent.defaultsKey)
-            OpenCodeHTTPClient.shared.clearAllSessions()
             if onlineAIAgent == .opencode {
                 startOpenCodeServerIfNeeded()
             }
             checkConnection()
         }
     }
+    var currentAssistantEngine: OnlineAIAgent {
+        conversations.first(where: { $0.id == activeConversationID })?.assistantEngine ?? onlineAIAgent
+    }
+    var advancedCLIEnabled: Bool = UserDefaults.standard.bool(forKey: "advancedCLIEnabled") {
+        didSet { UserDefaults.standard.set(advancedCLIEnabled, forKey: "advancedCLIEnabled") }
+    }
+
     /// 上一次用过的 mode —— 持久化到 UserDefaults["agentMode"]。
     /// 新建对话时把这个值作为默认 mode 继承下去；切对话 / 切 mode 时也会跟着更新，
     /// 这样下次启动 / 下次新建都能记住"我习惯用什么"。
@@ -173,7 +189,7 @@ final class ChatViewModel {
                 conversations[idx].messages[0].content = Self.welcomeMessageContent(for: newValue)
             }
             lastUsedMode = newValue
-            // 通知灵动岛左耳 / Clawd 等：当前对话的 mode 变了
+            // 通知灵动岛和状态 UI：当前对话的 mode 变了
             NotificationCenter.default.post(
                 name: .init("HermesPetModeChanged"),
                 object: nil,
@@ -214,41 +230,40 @@ final class ChatViewModel {
             UserDefaults.standard.set(hapticEnabled, forKey: "hapticEnabled")
         }
     }
-    /// Clawd 桌面漫步开关 —— Claude 模式下，用户 3min 无操作时，Clawd 会从灵动岛跳到桌面顶部漫步。
+    /// TARS 桌面漫步开关。存储键沿用旧名以兼容已有用户设置。
     /// 默认开（用户随时可在设置里关掉）
-    var clawdWalkEnabled: Bool {
+    var tarsWalkEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(clawdWalkEnabled, forKey: "clawdWalkEnabled")
+            UserDefaults.standard.set(tarsWalkEnabled, forKey: "clawdWalkEnabled")
             NotificationCenter.default.post(
-                name: .init("HermesPetClawdWalkSettingChanged"),
+                name: .init("HermesPetTarsWalkSettingChanged"),
                 object: nil,
-                userInfo: ["enabled": clawdWalkEnabled]
+                userInfo: ["enabled": tarsWalkEnabled]
             )
         }
     }
-    /// Clawd 自由活动开关 —— 开启后跳过"3min idle"这个前置条件，
-    /// 只要在 Claude 模式 + 漫步开关开着 + 没在 streaming，Clawd 就一直在屏幕上玩
-    var clawdFreeRoamEnabled: Bool {
+    /// TARS 自由活动开关 —— 开启后跳过 3 分钟 idle 前置条件。
+    var tarsFreeRoamEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(clawdFreeRoamEnabled, forKey: "clawdFreeRoamEnabled")
+            UserDefaults.standard.set(tarsFreeRoamEnabled, forKey: "clawdFreeRoamEnabled")
             NotificationCenter.default.post(
-                name: .init("HermesPetClawdFreeRoamSettingChanged"),
+                name: .init("HermesPetTarsFreeRoamSettingChanged"),
                 object: nil,
-                userInfo: ["enabled": clawdFreeRoamEnabled]
+                userInfo: ["enabled": tarsFreeRoamEnabled]
             )
         }
     }
-    /// Clawd 桌面巡视开关 —— 开启后 Clawd 漫步期间会定期下到桌面，
+    /// TARS 桌面巡视开关 —— 开启后漫步期间会定期下到桌面，
     /// 走到某个图标旁，把文件名扔给 Hermes 拿一句短评显示在气泡里。
     /// 需要 Finder 自动化权限（osascript 第一次会弹系统弹窗）+ 已配置 Hermes API key（用本地兜底文案除外）。
     /// 默认 OFF —— 这是个轻松彩蛋，让用户主动开启更合适
-    var clawdDesktopPatrolEnabled: Bool {
+    var tarsDesktopPatrolEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(clawdDesktopPatrolEnabled, forKey: "clawdDesktopPatrolEnabled")
+            UserDefaults.standard.set(tarsDesktopPatrolEnabled, forKey: "clawdDesktopPatrolEnabled")
             NotificationCenter.default.post(
-                name: .init("HermesPetClawdPatrolSettingChanged"),
+                name: .init("HermesPetTarsPatrolSettingChanged"),
                 object: nil,
-                userInfo: ["enabled": clawdDesktopPatrolEnabled]
+                userInfo: ["enabled": tarsDesktopPatrolEnabled]
             )
         }
     }
@@ -330,11 +345,10 @@ final class ChatViewModel {
     /// 不读内容，发送时把路径拼到 prompt 末尾让 AI 用 Read 工具自己访问，省 context、更快。
     var pendingDocuments: [URL] = []
 
-    private let apiClient = APIClient(source: .hermes)
     private let directClient = APIClient(source: .direct)
-    private let claudeClient = ClaudeCodeClient()
-    private let codexClient = CodexClient()
-    private let openClawClient = OpenClawClient()
+    private let harness = AgentHarness()
+    private var claudeClient: ClaudeCodeClient { harness.claudeClient }
+    private var codexClient: CodexClient { harness.codexClient }
     private let storage = StorageManager.shared
     /// 画布调度服务 —— init 末尾构造（@Observable class 不让用 lazy var）
     private var canvasService: CanvasService!
@@ -351,10 +365,7 @@ final class ChatViewModel {
     }
 
     init() {
-        self.apiBaseURL = UserDefaults.standard.string(forKey: "apiBaseURL") ?? "http://localhost:8642/v1"
-        self.apiKey = UserDefaults.standard.string(forKey: "apiKey") ?? ""
-        self.modelName = UserDefaults.standard.string(forKey: "modelName") ?? "hermes-agent"
-        // 在线 AI：默认不预填，让用户通过设置面板的 ProviderPreset Picker 选一家
+        // AI 助手：默认不预填，让用户通过设置面板的 ProviderPreset Picker 选一家
         self.directAPIBaseURL = UserDefaults.standard.string(forKey: "directAPIBaseURL") ?? ""
         let savedDirectProvider = UserDefaults.standard.string(forKey: "directAPIProviderID") ?? ""
         if !savedDirectProvider.isEmpty,
@@ -367,11 +378,16 @@ final class ChatViewModel {
         let savedPreference = UserDefaults.standard.string(forKey: "directAPIResponsePreference")
         self.directAPIResponsePreference = DirectResponsePreference(rawValue: savedPreference ?? "") ?? .balanced
         let savedOnlineAgent = UserDefaults.standard.string(forKey: OnlineAIAgent.defaultsKey)
-        self.onlineAIAgent = OnlineAIAgent(rawValue: savedOnlineAgent ?? "") ?? .opencode
+        self.onlineAIAgent = OnlineAIAgent.restored(savedOnlineAgent)
+        UserDefaults.standard.set(OnlineAIAgent.restored(savedOnlineAgent).rawValue, forKey: OnlineAIAgent.defaultsKey)
+        ModelDriverConfig.syncFromDefaults()
         let savedMode = UserDefaults.standard.string(forKey: "agentMode")
-        // 全新用户默认走「在线 AI」—— 对方拿到 dmg 多半没装 Hermes Gateway 也没 claude/codex CLI，
+        // 全新用户默认走「AI 助手」—— 对方拿到 dmg 多半没装 claude/codex CLI，
         // directAPI 配上 API Key 就能立刻用。老用户的 agentMode UserDefaults 还在，不受影响
         self.lastUsedMode = AgentMode(rawValue: savedMode ?? "") ?? .directAPI
+        if AgentMode(rawValue: savedMode ?? "") != nil && AgentMode(rawValue: savedMode ?? "") != .directAPI && UserDefaults.standard.object(forKey: "advancedCLIEnabled") == nil {
+            self.advancedCLIEnabled = true
+        }
         self.isLaunchAtLoginOn = SMAppService.mainApp.status == .enabled
         self.voiceStartSound  = UserDefaults.standard.string(forKey: SoundEvent.voiceStart.defaultsKey)  ?? SoundEvent.voiceStart.fallbackValue
         self.voiceFinishSound = UserDefaults.standard.string(forKey: SoundEvent.voiceFinish.defaultsKey) ?? SoundEvent.voiceFinish.fallbackValue
@@ -383,12 +399,11 @@ final class ChatViewModel {
         self.quietMode = UserDefaults.standard.bool(forKey: "quietMode")
         // hapticEnabled 默认 true（无值时 object(forKey:) → nil → ?? true）
         self.hapticEnabled = (UserDefaults.standard.object(forKey: "hapticEnabled") as? Bool) ?? true
-        // clawdWalkEnabled 默认 true（首次见到时让用户被这个彩蛋惊艳一次）
-        self.clawdWalkEnabled = (UserDefaults.standard.object(forKey: "clawdWalkEnabled") as? Bool) ?? true
-        // clawdFreeRoamEnabled 默认 false（默认仅 idle 触发，避免一开机就一直在屏幕上）
-        self.clawdFreeRoamEnabled = UserDefaults.standard.bool(forKey: "clawdFreeRoamEnabled")
-        // clawdDesktopPatrolEnabled 默认 false —— 需要 Finder 自动化权限，默认 OFF 让用户主动开
-        self.clawdDesktopPatrolEnabled = UserDefaults.standard.bool(forKey: "clawdDesktopPatrolEnabled")
+        // 兼容键 clawdWalkEnabled 默认 true
+        self.tarsWalkEnabled = (UserDefaults.standard.object(forKey: "clawdWalkEnabled") as? Bool) ?? true
+        // 旧键继续读取，避免升级后丢失用户偏好。
+        self.tarsFreeRoamEnabled = UserDefaults.standard.bool(forKey: "clawdFreeRoamEnabled")
+        self.tarsDesktopPatrolEnabled = UserDefaults.standard.bool(forKey: "clawdDesktopPatrolEnabled")
         // showDockIcon 默认 false —— 保持菜单栏 agent 极简风格，用户主动开才显示 Dock 图标
         self.showDockIcon = UserDefaults.standard.bool(forKey: "showDockIcon")
         // activityRecordingEnabled 默认 true（首次会弹 Accessibility 权限框，用户可在设置里关）
@@ -398,6 +413,11 @@ final class ChatViewModel {
         // 早报后端默认 Hermes（自托管/隐私零风险），用户可改
         let savedBriefing = UserDefaults.standard.string(forKey: "morningBriefingBackend")
         self.morningBriefingBackend = AgentMode(rawValue: savedBriefing ?? "") ?? .directAPI
+        do {
+            self.agentConfiguration = try AgentConfiguration.load()
+        } catch {
+            self.errorMessage = "Agent 配置读取失败：\(error.localizedDescription)"
+        }
 
         // 加载持久化的对话列表（兼容旧版 session.json，自动迁移）
         var loaded = storage.loadConversations()
@@ -407,7 +427,7 @@ final class ChatViewModel {
                 title: "新对话",
                 messages: [ChatMessage(
                     role: .assistant,
-                    content: "👋 你好！我是你的 Hermes 桌宠，随时找我聊天或干活～\n点击 ⚙️ 配置好 API 地址和密钥就能用了。"
+                    content: TarsPersonality.welcome
                 )],
                 mode: self.lastUsedMode
             )]
@@ -509,6 +529,9 @@ final class ChatViewModel {
                 await OpenCodeHTTPClient.shared.rejectQuestion(requestID: requestID)
             }
         }
+        harness.agentsClient.onCleanupError = { [weak self] message in
+            Task { @MainActor in self?.errorMessage = message }
+        }
     }
 
     nonisolated deinit {
@@ -553,87 +576,42 @@ final class ChatViewModel {
         }
     }
 
+    private var connectionCheckID = UUID()
+
     func checkConnection() {
-        switch agentMode {
-        case .directAPI:
-            switch onlineAIAgent {
-            case .opencode:
-                // opencode agent 可以在未配置 API Key 时走内置 free model。
-                // 连接状态看本地 runtime 是否 ready；如果还没启动，按需拉起。
-                if OpenCodeServerManager.shared.isReady {
-                    connectionStatus = .connected
-                } else if let err = OpenCodeServerManager.shared.lastError {
-                    connectionStatus = .disconnected(err)
-                } else {
-                    connectionStatus = .unknown
-                    startOpenCodeServerIfNeeded()
-                    Task { [weak self] in
-                        for _ in 0..<15 {
-                            try? await Task.sleep(nanoseconds: 200_000_000)
-                            if OpenCodeServerManager.shared.isReady {
-                                await MainActor.run { self?.connectionStatus = .connected }
-                                return
-                            }
-                        }
-                        await MainActor.run {
-                            if let err = OpenCodeServerManager.shared.lastError {
-                                self?.connectionStatus = .disconnected(err)
-                            } else {
-                                self?.connectionStatus = .disconnected("opencode 引擎启动超时")
-                            }
-                        }
-                    }
-                }
-            case .hermes:
-                guard !apiKey.isEmpty else {
-                    connectionStatus = .disconnected("Hermes 未配置密钥")
-                    return
-                }
-                Task {
-                    do {
-                        let ok = try await apiClient.checkHealth()
-                        connectionStatus = ok ? .connected : .disconnected("Hermes API 未响应")
-                    } catch {
-                        connectionStatus = .disconnected(error.localizedDescription)
-                    }
-                }
-            case .openClaw:
-                Task {
-                    let ok = await openClawClient.checkAvailable()
-                    connectionStatus = ok ? .connected : .disconnected("找不到 openclaw 命令")
-                }
-            case .none:
-                guard !directAPIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    connectionStatus = .disconnected("未选择服务商")
-                    return
-                }
-                guard !directAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    connectionStatus = .disconnected("未配置 API Key")
-                    return
-                }
-                guard !directAPIModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                    connectionStatus = .disconnected("未选择模型")
-                    return
-                }
-                Task {
-                    do {
-                        let ok = try await directClient.checkHealth()
-                        connectionStatus = ok ? .connected : .disconnected("API 未响应")
-                    } catch {
-                        connectionStatus = .disconnected(error.localizedDescription)
-                    }
-                }
+        let checkID = UUID()
+        connectionCheckID = checkID
+        let mode = agentMode
+        let engine = currentAssistantEngine
+        if mode == .directAPI && engine == .opencode {
+            if directAPIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                connectionStatus = .disconnected("未选择服务商"); return
             }
-        case .claudeCode:
-            Task {
-                let ok = await claudeClient.checkAvailable()
-                connectionStatus = ok ? .connected : .disconnected("找不到 claude 命令")
+            if directAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                connectionStatus = .disconnected("未配置 API Key"); return
             }
-        case .codex:
-            Task {
-                let ok = await codexClient.checkAvailable()
-                connectionStatus = ok ? .connected : .disconnected("找不到 codex 命令")
+            if directAPIModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                connectionStatus = .disconnected("未选择模型"); return
             }
+            if OpenCodeServerManager.shared.isReady { connectionStatus = .connected; return }
+        }
+        connectionStatus = .unknown
+        Task {
+            let status: ConnectionStatus
+            do {
+                switch mode {
+                case .directAPI:
+                    if engine == .agentsAPI { try await harness.agentsClient.checkConnection() }
+                    else { try await OpenCodeServerManager.shared.start() }
+                    status = .connected
+                case .claudeCode:
+                    status = await claudeClient.checkAvailable() ? .connected : .disconnected("Claude 未就绪")
+                case .codex:
+                    status = await codexClient.checkAvailable() ? .connected : .disconnected("Codex 未就绪")
+                }
+            } catch { status = .disconnected(error.localizedDescription) }
+            guard connectionCheckID == checkID else { return }
+            connectionStatus = status
         }
     }
 
@@ -660,34 +638,27 @@ final class ChatViewModel {
             return
         }
 
-        // 在线 AI 模式：不选 agent 才是服务商直连，必须有 API Key + baseURL。
-        // opencode / Hermes / OpenClaw 都是本地 agent 路径，各自按本地配置检查。
-        if agentMode == .directAPI,
-           onlineAIAgent.requiresDirectProviderConfig,
-           (directAPIKey.isEmpty || directAPIBaseURL.isEmpty || directAPIModel.isEmpty) {
+        if agentMode == .directAPI && currentAssistantEngine == .opencode &&
+            (directAPIKey.isEmpty || directAPIBaseURL.isEmpty || directAPIModel.isEmpty) {
             errorMessage = "请先在设置中选服务商、模型并填 API Key"
             showSettings = true
             return
         }
-        if agentMode == .directAPI, onlineAIAgent == .hermes, apiKey.isEmpty {
-            errorMessage = "请先在设置中配置 Hermes API 密钥"
-            showSettings = true
-            return
+        if agentMode == .directAPI && currentAssistantEngine == .agentsAPI {
+            do { _ = try AgentsCredentials.load(); try AgentsAPISettings.load().validate() }
+            catch { errorMessage = error.localizedDescription; showSettings = true; return }
         }
-        if agentMode == .directAPI, onlineAIAgent == .openClaw {
-            let available = UserDefaults.standard.string(forKey: "openClawExecutablePath")?.isEmpty == false
-            if !available {
-                errorMessage = "未检测到 openclaw 命令，请先安装 OpenClaw"
-                showSettings = true
-                return
-            }
-        }
-
         // 任意模式下断开都先尝试重连
         if case .disconnected(let reason) = connectionStatus {
             errorMessage = "连接断开: \(reason)，正在重试..."
             checkConnection()
             return
+        }
+
+        if agentMode == .directAPI,
+           let index = conversations.firstIndex(where: { $0.id == activeConversationID }),
+           conversations[index].assistantEngine == nil {
+            conversations[index].assistantEngine = onlineAIAgent
         }
 
         // 把当前 pending 图片 / 文档随消息一起发出去，发完清空
@@ -696,20 +667,12 @@ final class ChatViewModel {
         let attachedDocPaths = pendingDocuments.map { $0.path }
         pendingDocuments = []
 
-        // **关键**：在线 AI + 拖图 → 立刻通知云朵戴眼镜。
-        // 必须在下面的 `isStreaming = true` + broadcastBackgroundStreamingCount() 之前 post，
-        // 否则 ClawdWalkOverlayController 收到 streaming 通知会先把云朵收回灵动岛，
-        // 等 OpenCodeHTTPClient.runStream 那边异步触发 wear glasses 时云朵已经不在桌面了
+        // AI 助手拖图时给 TARS 一个轻提示；角色形象不随模式变化。
         if agentMode == .directAPI && !attachedImages.isEmpty {
             NotificationCenter.default.post(
-                name: .init("HermesPetCloudPetWearGlasses"),
+                name: .init("HermesPetTarsBubble"),
                 object: nil,
-                userInfo: ["duration": 6.0]
-            )
-            NotificationCenter.default.post(
-                name: .init("HermesPetClawdBubble"),
-                object: nil,
-                userInfo: ["text": "戴上眼镜看图~ 🖼️", "duration": 2.5]
+                userInfo: ["text": "视觉分析模块已启用", "duration": 2.5]
             )
         }
 
@@ -784,14 +747,29 @@ final class ChatViewModel {
             }
         }
 
-        // 长对话裁剪：每次都重发完整历史会越来越慢 + 烧 token，超阈值时只发开头+近况
-        apiMessages = Self.trimHistoryForAPI(apiMessages)
-
+        let run: AgentRunRequest
+        do {
+            run = try harness.prepare(messages: apiMessages, conversationID: targetConversationID,
+                                      mode: mode, engine: currentAssistantEngine, configuration: agentConfiguration)
+        } catch {
+            updateMessage(conversationID: targetConversationID, messageID: assistantMessageID) {
+                $0.content = "❌ \(error.localizedDescription)"
+                $0.isStreaming = false
+            }
+            if let index = conversations.firstIndex(where: { $0.id == targetConversationID }) {
+                conversations[index].isStreaming = false
+            }
+            errorMessage = error.localizedDescription
+            storage.saveConversations(conversations)
+            broadcastBackgroundStreamingCount()
+            NotificationCenter.default.post(name: .init("HermesPetTaskFinished"), object: nil,
+                                            userInfo: ["success": false])
+            return
+        }
         let request = PendingStreamRequest(
             conversationID: targetConversationID,
             assistantMessageID: assistantMessageID,
-            mode: mode,
-            apiMessages: apiMessages
+            run: run
         )
 
         // 并发上限：超过 maxConcurrentStreams 入队等前面完成
@@ -805,26 +783,6 @@ final class ChatViewModel {
         }
 
         startStream(request)
-    }
-
-    private func directAPIStream(messages: [ChatMessage],
-                                 conversationID: String) -> AsyncThrowingStream<String, Error> {
-        switch onlineAIAgent {
-        case .opencode:
-            return OpenCodeHTTPClient.shared.streamCompletion(
-                messages: messages,
-                conversationID: conversationID
-            )
-        case .hermes:
-            return apiClient.streamCompletion(messages: messages)
-        case .openClaw:
-            return openClawClient.streamCompletion(messages: messages)
-        case .none:
-            return directClient.streamCompletion(
-                messages: messages,
-                onlineAgent: onlineAIAgent
-            )
-        }
     }
 
     /// 一次性快问流式 —— 不写 conversations.json，不影响任何已有对话。
@@ -849,12 +807,35 @@ final class ChatViewModel {
                 hasDocuments: false
             )
         }
-        let oneShot = ChatMessage(role: .user, content: prompt)
-        let messages = [oneShot]
-        switch mode {
-        case .directAPI:  return directAPIStream(messages: messages, conversationID: "quick-ask")
-        case .claudeCode: return claudeClient.streamCompletion(messages: messages)
-        case .codex:      return codexClient.streamCompletion(messages: messages)
+        let run: AgentRunRequest
+        do {
+            run = try harness.prepare(messages: [ChatMessage(role: .user, content: prompt)],
+                                      conversationID: "one-shot-\(UUID().uuidString)", mode: mode,
+                                      engine: modeOverride == nil ? currentAssistantEngine : onlineAIAgent,
+                                      configuration: agentConfiguration, ephemeral: true)
+        } catch {
+            return AsyncThrowingStream { $0.finish(throwing: error) }
+        }
+        oneShotCount += 1
+        return AsyncThrowingStream { continuation in
+            let task = Task { @MainActor [self] in
+                defer {
+                    oneShotCount -= 1
+                    harness.reset(conversationID: run.conversationID)
+                }
+                do {
+                    var cloudText = ""
+                    for try await delta in harness.stream(run) {
+                        try Task.checkCancellation()
+                        if run.mode == .directAPI && run.engine == .agentsAPI {
+                            AgentTextUpdate.apply(delta, to: &cloudText)
+                        } else { continuation.yield(delta) }
+                    }
+                    if !cloudText.isEmpty { continuation.yield(cloudText) }
+                    continuation.finish()
+                } catch { continuation.finish(throwing: error) }
+            }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
         }
     }
 
@@ -982,8 +963,7 @@ final class ChatViewModel {
     private func startStream(_ request: PendingStreamRequest) {
         let targetConversationID = request.conversationID
         let assistantMessageID = request.assistantMessageID
-        let mode = request.mode
-        let apiMessages = request.apiMessages
+        let mode = request.run.mode
 
         updateMessage(conversationID: targetConversationID, messageID: assistantMessageID) { msg in
             msg.content = ""
@@ -993,20 +973,7 @@ final class ChatViewModel {
         let task = Task {
             var didSucceed = false
             do {
-                let stream: AsyncThrowingStream<String, Error>
-                switch mode {
-                case .directAPI:
-                    stream = directAPIStream(messages: apiMessages, conversationID: targetConversationID)
-                case .claudeCode:
-                    // 把完整对话历史（含跟其他 AI 的对话）传给 Claude，
-                    // 实现跨 AI 共享记忆
-                    stream = claudeClient.streamCompletion(messages: apiMessages)
-                case .codex:
-                    stream = codexClient.streamCompletion(
-                        messages: apiMessages,
-                        conversationID: targetConversationID
-                    )
-                }
+                let stream = harness.stream(request.run)
 
                 var fullContent = ""
                 var lastUpdate = Date.distantPast
@@ -1019,7 +986,7 @@ final class ChatViewModel {
 
                 for try await delta in stream {
                     try Task.checkCancellation()
-                    fullContent += delta
+                    AgentTextUpdate.apply(delta, to: &fullContent)
                     let visibleContent = Self.sanitizeAssistantVisibleContent(fullContent)
                     let now = Date()
                     if now.timeIntervalSince(lastUpdate) >= throttle {
@@ -1066,11 +1033,11 @@ final class ChatViewModel {
                     msg.content = "❌ \(friendly)"
                 }
                 self.errorMessage = friendly
-                // directAPI 模式 + 撞错 → 云朵冒一句可操作 hint，让用户知道接下来怎么办
+                // AI 助手撞错时让 TARS 给一句可操作提示。
                 if mode == .directAPI {
                     let petHint = Self.petHintForError(friendly)
                     NotificationCenter.default.post(
-                        name: .init("HermesPetClawdBubble"),
+                        name: .init("HermesPetTarsBubble"),
                         object: nil,
                         userInfo: ["text": petHint, "duration": 2.8]
                     )
@@ -1091,7 +1058,12 @@ final class ChatViewModel {
             NotificationCenter.default.post(
                 name: .init("HermesPetTaskFinished"),
                 object: nil,
-                userInfo: ["success": didSucceed]
+                userInfo: [
+                    "success": didSucceed,
+                    "playSound": didSucceed,
+                    "conversationID": targetConversationID,
+                    "messageID": assistantMessageID
+                ]
             )
             // 任务成功 + 聊天窗关着 → 触发"AI 回复摘要"卡片（v1.2.7-dev）
             // 解决 ⌘⇧V 语音 / ⌘⇧Space quickAsk 这类场景"看不到回复"的痛点
@@ -1180,7 +1152,8 @@ final class ChatViewModel {
             broadcastBackgroundStreamingCount()
             NotificationCenter.default.post(
                 name: .init("HermesPetTaskFinished"),
-                object: nil, userInfo: ["success": false]
+                object: nil,
+                userInfo: ["success": false, "playSound": false]
             )
             return
         }
@@ -1231,67 +1204,32 @@ final class ChatViewModel {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// 长对话历史裁剪 —— 避免每次重发完整历史导致：
-    ///   - token 成本线性增长（30 轮对话第 31 条要带 30 条历史）
-    ///   - 冷启动延迟变长（claude 进程要读 + 解析很大 prompt）
-    ///
-    /// 策略：超过 `maxMessages` 条时，保留**第一条 user 消息**（提供原始上下文）+ **最近 `keepRecent` 条**。
-    /// 在最早保留的消息内容前 prepend 一行系统注，让 AI 知道历史被裁剪过。
-    /// 静态方法 —— 纯函数，方便测试 + 不依赖 self
-    static func trimHistoryForAPI(_ messages: [ChatMessage]) -> [ChatMessage] {
-        let maxMessages = 20
-        let keepRecent = 16
-
-        guard messages.count > maxMessages else { return messages }
-
-        let recent = Array(messages.suffix(keepRecent))
-        let recentIDs = Set(recent.map { $0.id })
-
-        // 第一条 user 消息：如果不在 recent 里，作为起始上下文单独保留
-        var head: [ChatMessage] = []
-        if let firstUser = messages.first(where: { $0.role == .user }),
-           !recentIDs.contains(firstUser.id) {
-            head.append(firstUser)
-        }
-
-        let omitted = messages.count - head.count - recent.count
-        var result = head + recent
-
-        if omitted > 0, !result.isEmpty {
-            // 用 system 注释提示 AI 历史被裁剪。content 是 var，可以 mutate
-            result[0].content = "[系统注：本对话有 \(omitted) 条早期消息已省略以加速响应。如需了解早期内容请直接问用户。]\n\n" + result[0].content
-        }
-
-        return result
-    }
-
-    /// 在线 AI 撞错时云朵气泡说什么 —— 按错误关键词分类给可操作的 hint。
-    /// 用云朵的"飘逸"语气，告诉用户下一步该做啥（不是冷冰冰报错）
+    /// AI 助手撞错时 TARS 气泡说什么。
     static func petHintForError(_ msg: String) -> String {
         let m = msg.lowercased()
         if m.contains("deepseek") && (m.contains("图片") || m.contains("vision") || m.contains("image")) {
-            return "DeepSeek 不会看图，切到 Kimi/GLM~ 🌥️"
+            return "该模型无视觉能力，请切换 Kimi 或 GLM"
         }
         if m.contains("api key") || m.contains("配置") || m.contains("apikey") {
-            return "去设置粘个 API Key~ 🔑"
+            return "缺少 API Key，请检查设置"
         }
         if m.contains("还在启动") || m.contains("serverready") || m.contains("server") && m.contains("ready") {
-            return "云在飘来，等我一下~ ☁️"
+            return "引擎正在启动"
         }
         if m.contains("超时") || m.contains("timeout") {
-            return "云被堵在路上，再试一次 🔄"
+            return "请求超时，建议重试"
         }
         if m.contains("401") || m.contains("403") || m.contains("权限") {
-            return "Key 不对，去设置检查~ 🔑"
+            return "认证失败，请检查 API Key"
         }
         if m.contains("没产出正文") || m.contains("没有响应") {
-            return "云走神了，点重发试试 🔄"
+            return "未收到正文，建议重试"
         }
         if m.contains("断") || m.contains("network") || m.contains("network") {
-            return "信号弱，再试一次 📡"
+            return "网络连接异常，建议重试"
         }
         // 兜底
-        return "云遇到点问题 😢"
+        return "任务遇到问题"
     }
 
     /// 把各种 Error 转成中文友好提示。
@@ -1372,6 +1310,10 @@ final class ChatViewModel {
     // MARK: - Actions
 
     func clearChat() {
+        guard !isLoading else {
+            errorMessage = "请先取消当前任务，再清空对话"
+            return
+        }
         // 清空前先删掉这对话历史里所有图片文件，避免磁盘遗留
         let allPaths = messages.flatMap { $0.imagePaths }
         if !allPaths.isEmpty { storage.deleteImageFiles(allPaths) }
@@ -1386,10 +1328,11 @@ final class ChatViewModel {
         // 标题也重置回默认（让下次发消息时能再次 auto-title）
         if let idx = conversations.firstIndex(where: { $0.id == activeConversationID }) {
             conversations[idx].title = "新对话"
+            conversations[idx].assistantEngine = nil
         }
         // 清空时也重置 Claude 的会话延续状态
-        claudeClient.resetSession()
-        codexClient.resetSession(conversationID: activeConversationID)
+        harness.reset(conversationID: activeConversationID)
+        harness.removeArchive(conversationID: activeConversationID)
         storage.saveConversations(conversations)
     }
 
@@ -1401,7 +1344,7 @@ final class ChatViewModel {
     @discardableResult
     func newConversation(mode: AgentMode? = nil) -> Bool {
         guard conversations.count < kMaxConversations else { return false }
-        let resolved = mode ?? lastUsedMode
+        let resolved = mode ?? (advancedCLIEnabled ? lastUsedMode : .directAPI)
         let conv = Conversation(
             title: "新对话",
             messages: [ChatMessage(
@@ -1479,7 +1422,7 @@ final class ChatViewModel {
         pendingImages.removeAll()
         pendingDocuments.removeAll()
         errorMessage = nil
-        // 切到的对话清除未读标记 + 同步 mode 给灵动岛 / Clawd / 连接检测
+        // 切到的对话清除未读标记 + 同步 mode 给灵动岛 / TARS / 连接检测
         if let idx = conversations.firstIndex(where: { $0.id == id }) {
             if conversations[idx].hasUnread {
                 conversations[idx].hasUnread = false
@@ -1487,7 +1430,7 @@ final class ChatViewModel {
             let newMode = conversations[idx].mode
             // 同步 lastUsedMode（让"下次新建"延续当前正在看的这个 mode）
             if lastUsedMode != newMode { lastUsedMode = newMode }
-            // 通知灵动岛左耳精灵 / Clawd 等监听者
+            // 通知灵动岛左耳和其他监听者
             NotificationCenter.default.post(
                 name: .init("HermesPetModeChanged"),
                 object: nil,
@@ -1514,7 +1457,7 @@ final class ChatViewModel {
         )
     }
 
-    /// v1.3 起在线 AI 走 opencode serve HTTP API，server 启动时一次性加载 provider 配置。
+    /// v1.3 起 AI 助手的 opencode 引擎走 opencode serve HTTP API，server 启动时一次性加载 provider 配置。
     /// 用户在设置改 API Key / 切服务商 → 防抖 800ms 后重启 server 让新配置生效。
     /// 防抖原因：directAPIKey 是 TextField 绑定，每打一个字符 didSet 都会触发；
     /// 800ms 内连续修改只会重启一次
@@ -1545,12 +1488,15 @@ final class ChatViewModel {
     func closeConversation(id: String) {
         guard conversations.count > 1 else { return }
         guard let idx = conversations.firstIndex(where: { $0.id == id }) else { return }
+        guard !conversations[idx].isStreaming else {
+            errorMessage = "请先取消该对话的任务，再关闭对话"
+            return
+        }
         // 关闭前清理图片文件
         let allPaths = conversations[idx].messages.flatMap { $0.imagePaths }
         if !allPaths.isEmpty { storage.deleteImageFiles(allPaths) }
-        if conversations[idx].mode == .codex {
-            codexClient.resetSession(conversationID: id)
-        }
+        harness.reset(conversationID: id)
+        harness.removeArchive(conversationID: id)
 
         let wasActive = (id == activeConversationID)
         conversations.remove(at: idx)
@@ -1662,7 +1608,7 @@ final class ChatViewModel {
     }
 
     /// 切换对话对象（聊天头部一键切） —— 4 态 cycle：
-    ///   Hermes → 在线 AI → Claude Code → Codex → Hermes
+    ///   AI 助手 → Claude Code → Codex（CLI 入口只在高级设置启用后可见）
     /// 切到需要 CLI 的 mode 前先用 CLIAvailability 探测，没装就跳过这一档继续往下找
     func toggleAgentMode() {
         Task { @MainActor in
@@ -1672,7 +1618,7 @@ final class ChatViewModel {
             case .claudeCode: candidates = [.codex, .directAPI, .claudeCode]
             case .codex:      candidates = [.directAPI, .claudeCode, .codex]
             }
-            for next in candidates {
+            for next in candidates where next == .directAPI || advancedCLIEnabled {
                 if await isModeUsable(next) {
                     agentMode = next
                     Haptic.tap(.alignment)
@@ -1696,18 +1642,18 @@ final class ChatViewModel {
 
     /// 检查目标 mode 是否能用。
     /// - directAPI 永远可用（key 没配在这里不挡，由发送时拦截 + 状态点提示）
-    /// - claudeCode / codex 必须有对应 CLI；缺失就 toast 提示让用户切到「在线 AI」，并返回 false
+    /// - claudeCode / codex 必须有对应 CLI；缺失就 toast 提示让用户切到「AI 助手」，并返回 false
     private func isModeUsable(_ mode: AgentMode) async -> Bool {
         switch mode {
         case .directAPI:
             return true
         case .claudeCode:
             if await CLIAvailability.claudeAvailable() { return true }
-            errorMessage = "未检测到 claude CLI，切到「在线 AI」就能只用 API Key 聊天"
+            errorMessage = "Claude 未就绪，切到「AI 助手」就能只用 API Key 聊天"
             return false
         case .codex:
             if await CLIAvailability.codexAvailable() { return true }
-            errorMessage = "未检测到 codex CLI，切到「在线 AI」就能只用 API Key 聊天"
+            errorMessage = "Codex 未就绪，切到「AI 助手」就能只用 API Key 聊天"
             return false
         }
     }
@@ -1741,9 +1687,9 @@ final class ChatViewModel {
             errorMessage = "对话已达 \(kMaxConversations) 个上限，请先关一个再开新画布"
             return false
         }
-        // 在线 AI 没配置 → 画布生成会失败，先提示
+        // AI 助手没配置 → 画布生成会失败，先提示
         if directAPIKey.isEmpty || directAPIBaseURL.isEmpty {
-            errorMessage = "画布需要在线 AI 来规划内容，请先在设置中配置 API Key"
+            errorMessage = "画布需要 AI 助手来规划内容，请先在设置中配置 API Key"
             showSettings = true
             return false
         }
@@ -1767,7 +1713,7 @@ final class ChatViewModel {
         let conv = Conversation(
             title: "📐 " + (topic.count > 12 ? String(topic.prefix(12)) + "…" : topic),
             messages: [],
-            mode: .directAPI,         // 画布固定走在线 AI 做规划
+            mode: .directAPI,         // 画布固定走 AI 助手做规划
             kind: .canvas,
             canvas: board,
             isStreaming: true
@@ -1994,13 +1940,9 @@ final class ChatViewModel {
     // MARK: - 附件（图片 + 文档）
 
     /// 拖入文档时调用 —— 不读内容，只保存路径，发送时让有工具能力的 AI 自己访问。
-    /// 在线 AI 只有选择 opencode / OpenClaw / Hermes agent 时具备本地文件能力；
-    /// 默认模型是纯 HTTP chat completion。
+    /// AI 助手只有选择本地 agent runtime 时具备本地文件能力；
+    /// 当前默认引擎是 opencode。
     func attachDocumentPath(_ url: URL) {
-        if agentMode == .directAPI && onlineAIAgent != .opencode && onlineAIAgent != .openClaw && onlineAIAgent != .hermes {
-            errorMessage = "当前在线 AI agent 无法读取本地文件；请选择 opencode / OpenClaw，或切到 Claude Code / Codex"
-            return
-        }
         // 去重：同一文件已在队列里就不重复加
         if pendingDocuments.contains(url) { return }
         pendingDocuments.append(url)
@@ -2072,7 +2014,7 @@ final class ChatViewModel {
             postIslandToast("截图已添加")
         case .needsPermission:
             ScreenCapture.requestScreenRecordingPermission()
-            errorMessage = "需要「屏幕录制」权限。已弹出系统申请框；如果没弹，请到 系统设置 → 隐私与安全性 → 屏幕录制 中允许 HermesPet，然后重启应用"
+            errorMessage = "需要「屏幕录制」权限。已弹出系统申请框；如果没弹，请到 系统设置 → 隐私与安全性 → 屏幕录制 中允许 Tars，然后重启应用"
             postIslandToast("⚠️ 需要屏幕录制权限")
         case .failed(let message):
             errorMessage = "截屏失败：\(message)"
@@ -2100,7 +2042,7 @@ final class ChatViewModel {
             f.dateFormat = "yyyyMMdd-HHmm"
             return f.string(from: Date())
         }()
-        panel.nameFieldStringValue = "hermes-chat-\(stamp).md"
+        panel.nameFieldStringValue = "tars-chat-\(stamp).md"
         panel.title = "导出对话为 Markdown"
 
         panel.begin { [weak self] response in

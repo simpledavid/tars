@@ -44,10 +44,6 @@ actor CLIAvailability {
         await shared.isAvailable(command: "codex", userDefaultsKey: "codexExecutablePath")
     }
 
-    static func openClawAvailable() async -> Bool {
-        await shared.isAvailable(command: "openclaw", userDefaultsKey: "openClawExecutablePath")
-    }
-
     /// 强制清缓存 —— 用户在设置里点"重新检测"时调用
     static func invalidateCache() async {
         await shared.clearCache()

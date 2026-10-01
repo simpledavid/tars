@@ -1,9 +1,9 @@
 import Foundation
 import Security
 
-/// **在线 AI 模式的运行时**：管理 bundled opencode 二进制的 headless `serve` 子进程。
+/// **AI 助手模式的运行时**：管理 bundled opencode 二进制的 headless `serve` 子进程。
 ///
-/// 设计要点（见 TODO.md「P0-在线 AI 内核换代」）：
+/// 设计要点：
 /// - App 启动时 `start()`，从 .app/Contents/Resources/opencode copy 到
 ///   `~/Library/Application Support/HermesPet/bin/opencode`（writable 副本，
 ///   后续 `opencode upgrade` 才能热替换二进制 —— .app bundle 内是只读的）
@@ -119,7 +119,7 @@ final class OpenCodeServerManager: @unchecked Sendable {
                                     create: true)
         let dir = appSupport.appendingPathComponent("HermesPet/opencode-global", isDirectory: true)
         try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        OpenCodeConfigGenerator.ensureConfig(in: dir.path)
+        try OpenCodeConfigGenerator.ensureConfig(in: dir.path)
         return dir
     }
 
@@ -200,7 +200,7 @@ final class OpenCodeServerManager: @unchecked Sendable {
             throw OpenCodeServerError.bundledBinaryMissing
         }
 
-        // bundled 比 writable 新（用户刚装新版本 HermesPet）→ 重新 copy
+        // bundled 比 writable 新（用户刚装新版本 Tars）→ 重新 copy
         let needsCopy: Bool = {
             guard fm.fileExists(atPath: dest.path) else { return true }
             let bundledAttrs = try? fm.attributesOfItem(atPath: bundled.path)
@@ -250,6 +250,9 @@ final class OpenCodeServerManager: @unchecked Sendable {
 
         var env = CLIProcessEnvironment.make(executablePath: binary.path)
         env["OPENCODE_SERVER_PASSWORD"] = password
+        // Requests use each conversation's actual workspace; explicitly load the app-owned config
+        // for every opencode instance, including workspaces outside the server's startup directory.
+        env["OPENCODE_CONFIG"] = cwd.appendingPathComponent("opencode.json").path
         proc.environment = env
 
         let stdoutPipe = Pipe()
@@ -333,7 +336,7 @@ enum OpenCodeServerError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .bundledBinaryMissing:
-            return "找不到内嵌的 opencode 二进制（HermesPet.app/Contents/Resources/opencode）"
+            return "找不到内嵌的 opencode 二进制（Tars.app/Contents/Resources/opencode）"
         case .startupTimeout:
             return "opencode server 启动超时（10s 没监听端口）"
         case .processExitedEarly:

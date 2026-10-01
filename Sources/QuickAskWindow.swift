@@ -477,7 +477,7 @@ struct QuickAskView: View {
                         startPoint: .topLeading, endPoint: .bottomTrailing
                     )
                 )
-            Text("Hermes 快问")
+            Text("Tars 快问")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
                 .tracking(0.3)

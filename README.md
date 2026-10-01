@@ -1,283 +1,107 @@
 <div align="center">
 
-<img src="docs/banner.png" alt="HermesPet — 你的 AI 桌面伙伴，陪你工作，懂你所想" width="100%" />
+<img src="docs/banner.png" alt="Tars — 住在 MacBook 刘海里的 AI 桌面伙伴" width="100%" />
 
-# HermesPet 
-<img src="docs/app-icon.png" alt="HermesPet App Icon" width="28" height="28" />
+# Tars
 
-**让 AI 住在你 MacBook 的刘海里 · 零依赖开箱即用 · 多引擎并行的桌面 AI 伴侣**
+**住在 MacBook 刘海里的原生 AI 客户端与 TARS 机器人**
 
-[![Website](https://img.shields.io/badge/官网-hermespet.cc-7B68EE?logo=safari&logoColor=white)](https://hermespet.cc)
 [![macOS](https://img.shields.io/badge/macOS-14.0+-000000?logo=apple&logoColor=white)](https://www.apple.com/macos/)
 [![Swift](https://img.shields.io/badge/Swift-6.0-F05138?logo=swift&logoColor=white)](https://www.swift.org/)
-[![Latest Release](https://img.shields.io/github/v/release/basionwang-bot/HermesPet?label=最新版&color=success&logo=github)](https://github.com/basionwang-bot/HermesPet/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/basionwang-bot/HermesPet/total?label=下载量&color=blue)](https://github.com/basionwang-bot/HermesPet/releases)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 
-🌍 **中文** · [English](./README.en.md)
-
-### 📦 [点这里下载最新版本 DMG →](https://github.com/basionwang-bot/HermesPet/releases/latest)
-
-### 🌐 [访问项目主页 · hermespet.cc →](https://hermespet.cc)
-
-直接拿 macOS DMG · 双击安装 · 选服务商粘 API Key 就能用，**不依赖任何命令行工具**
+**中文** · [English](./README.en.md)
 
 </div>
 
----
+Tars 是一个 SwiftUI 原生 macOS 应用。点击刘海下方的胶囊呼出聊天，来自《星际穿越》的 TARS 机器人会在灵动岛、聊天状态条和桌面之间活动。整个应用只有这一个角色，切换 AI 模式不会更换形象。
 
-HermesPet 是一个常驻在 MacBook **顶部刘海下方**的 AI 聊天客户端 + 桌面伴侣。
+> Swift 6 · SwiftUI · macOS 14+ · 无 Electron · 无 WebView
 
-**最重要的一点**：装上就能用，不需要在你电脑上装任何命令行工具。打开 → 选个 AI 服务商（DeepSeek / 智谱 / Kimi / MiniMax / OpenAI 等）→ 粘贴 API Key → 开聊。如果你额外装了 `claude` / `codex` CLI，App 会自动检测出来并解锁"读写本地文件 / 跑命令 / 生图"这些高级能力。
+## 核心能力
 
-按一下刘海呼出聊天窗、按住 `⌘⇧V` 说话、拖文件给小家伙吃掉、让 Clawd 在桌面闲逛嗅你的文件 —— 桌面 AI 应当鲜活。
+- 最多 8 个独立对话，可并行流式执行
+- AI 助手、Claude Code、Codex 三种模式
+- OpenAI Agents API（Beta）：云端会话与调度，连接本机执行器
+- 内嵌 opencode：支持 DeepSeek、Kimi、智谱、MiniMax、OpenAI 等服务商模型
+- Claude Code / Codex CLI 位于高级设置；旧版 Hermes / OpenClaw 选择自动迁移到 opencode
+- Markdown、GFM 表格、代码块、图片、文件路径附件和 Codex 生图
+- ScreenCaptureKit 截屏、按住说话、全局快问、桌面 Pin
+- 灵动岛展示连接状态、工具调用、执行步骤、文件修改和完成状态
+- TARS 桌面巡视、文件扫描和桌面图标探索
 
-> Swift 6 · SwiftUI · macOS 14+ · 纯原生（无 Electron / 无 Web view）
+## 三种模式
 
----
+| 模式 | 适合场景 | 准备工作 |
+|---|---|---|
+| **AI 助手** | 对话、写作、看图、本地 agent 工具 | 设置中选择 Agents API 或 opencode，并配置相应密钥 |
+| **Claude Code** | 文件修改、命令执行、编程任务 | 本机 Claude 已登录 |
+| **Codex** | 编程任务、命令执行、生图 | 本机 Codex 已登录 |
 
-## ✨ 核心亮点
+## OpenAI Agents API 接入
 
-### 🔀 四种 AI 真正并行（不只是切换）
+在设置 → AI 助手中选择 OpenAI Agents API，填写模型、应用密钥和专用执行环境密钥。密钥存系统钥匙串。应用密钥需要 `api.agents.read`、`api.agents.write`、`api.responses.write`；执行环境密钥只授予环境连接权限，且与应用密钥属于同一项目和账号。详见 [OpenAI 配置说明](https://developers.openai.com/api/docs/guides/agents-api/environments/self-hosted)。
 
-每个对话**独立绑定**一个 AI 后端，发出第一条消息后锁定。你可以同时开：
+本机需要支持 `codex exec-server` 的 Codex CLI。Tars 按对话启动执行器，使用 Agents API 原生会话、MCP、Skills 和多 Agent 配置；云端自动管理上下文压缩。Agent 能力设置中可选择工作目录、Skills 目录、记忆和 MCP。文档附件发送路径，图片以图像输入发送。
 
-- 对话 1：让 **在线 AI**（DeepSeek 直连）翻一段技术文档
-- 对话 2：让 **Claude Code** 改一个 SwiftUI 组件
-- 对话 3：让 **Codex** 生成一张海报
+先保存设置并检测连接，再点击「验证一次对话」完成真实联调（调用模型会产生 API 用量）。检测连接只验证应用接口和执行器版本，不能证明模型和环境密钥有效。未配置或未验证时可继续使用 opencode；现有用户的默认引擎不自动切换。
 
-最多同时挂 **8 个对话**（`⌘1` ~ `⌘8` 直达），每个独立绑定 mode 不互相污染。切换对话时 header 的 mode 颜色和图标实时同步，灵动岛精灵也跟着切。
+每个对话绑定自己的引擎和会话。流关闭或 idle 事件不视为成功；任务完成需要确认根 Agent 的终态。断流时先查已保存的终态和输出，无法确认则请求取消并停止本机执行器，不重放输入。重启后保留未确认标记；仍不确定时需要清空该对话重建会话。浏览器授权等额外交互尚未接入，此时明确报错并取消。
 
-### 🏔 灵动岛 = 操作系统级状态显示
+## 快速开始
 
-刘海下方那个胶囊不是装饰：
-
-- **左耳**显示跟当前 mode 走的"精灵"（Hermes 羽毛 / Claude 的 Clawd / Codex 魔法棒 / 在线 AI ☁️ 云朵），像素风
-- **右耳**实时显示任务状态：旋转脉冲 → 步骤数 → 文件变更数 → Face ID 风画线对勾 ✓
-- **鼠标 hover → 水滴展开**：胶囊从刘海正下方像一滴水润下来，展示 mode 主色 + 模型名 + 最近回复预览。命中区严格收紧到硬件刘海几何，鼠标在屏幕中段贴近菜单栏不会误触发
-- **错误态**整个胶囊切琥珀色 + 点击重试
-- **截屏快门**0.18s 白色闪光 + scale 反弹
-- **后台对话发光**：多个对话其中之一在后台跑时，胶囊上对应的位置呼吸式微微发光
-
-### 🦞 双桌宠 · 桌面伴侣
-
-Claude 模式有 **Clawd 🦞**（橙色像素小螃蟹），在线 AI 模式有 **云朵 ☁️**（indigo 像素小精灵）。两个像素小家伙在菜单栏下方闲逛，会眨眼、呼吸、看左看右、被鼠标蹭一下小跑过来打招呼 —— **可可爱爱**。
-
-也是有点用的：
-
-- 🍽 **拖文件喂 Clawd** → 它嚼嚼吞下 → 文件自动作为附件附到当前对话发出去
-- 👃 **拖 Clawd 到桌面图标** → 它在那儿停下嗅一嗅 → AI 给文件名一句 ≤10 字中文短评
-- 🛡 文件名进 AI 前过本地黑名单（薪资 / 合同 / 密码 / .env 等敏感关键词整条跳过）
-
-### 🎙 按住任意 app 说话（Push-to-Talk）
-
-按住 `⌘⇧V`：
-
-- 屏幕边缘出现 **Apple Intelligence 风格的彩色光环**（6 色 AngularGradient 4 秒一圈）
-- 灵动岛右耳脉冲红色麦克风
-- 中文识别走 **SFSpeechRecognizer**（macOS 离线模型）
-- 松开自动发送，AI 回复完成有 "叮" 音效
-
-### 📎 拖文件给 AI · 但 AI 自己读
-
-拖入文档（PDF / txt / md / py / ts 都行）**不读全文塞 context**，而是：
-
-- Claude / Codex 模式：把**绝对路径**拼到 prompt 末尾，让 AI 用自己的 Read / Bash 工具按需读取
-- 客户端只负责把文件父目录加进 `--add-dir` 白名单
-
-省 context、省 token、更快，且 AI 可以决定只读哪几段。
-
-### 💬 多模态 · 多对话 · 跨 AI 共享上下文
-
-- 图片粘贴 / 拖拽 / 截图 / Codex 生图 全部支持
-- 同时最多 8 个对话，⌘N / ⌘[ / ⌘] / ⌘1~⌘8 快速切换
-- 切换 mode 时整个 conversation history 跟着传给新模型 —— **跨 AI 也能共享记忆**（让 Claude 看 Hermes 之前的回答，反之亦然）
-- 后台对话完成时胶囊红点提醒
-
-### 🎨 精致细节
-
-- **Markdown 渲染**含 GFM 表格（SwiftUI Grid 列宽对齐 + `:--/--:` 对齐符）
-- **AI 给编号列表自动转可点击卡片**（`1. xxx\n2. yyy` → 一组卡片，点哪个发哪个）
-- **Pin 桌面卡片**：把任意 AI 回答钉到桌面右上角，单击转回聊天继续
-- **每日早报**：AI 反向看你昨天的活动，早上主动给你一份 markdown 简报
-- **输入栏严格按 Apple HIG**（Capsule + 28pt 圆按钮 + iMessage 风 placeholder）
-- **窗口置顶切换**：聊天窗 header 上的 📌 图标随手切"始终置顶"和"普通窗口"，被其他 app 挡住觉得碍事就切普通模式
-- **Dock 图标可选**：默认菜单栏 agent 风格不占 Dock；设置里一键开启显示 Dock 图标 + 进入 Cmd+Tab
-
-### 🔄 自动更新 · 一键反馈
-
-- **应用内自动更新**：启动 60s 后 + 每 24h 自动检查 GitHub Release，有新版时菜单栏 🔵 提示。点「下载并安装」→ 后台拉 DMG → 自动 `hdiutil` 挂载 → Finder 弹窗引导拖到 Applications（不靠 Sparkle，不收集任何遥测）
-- **崩溃一键上报**：设置「关于」自动扫描 `~/Library/Logs/DiagnosticReports/` 里的 HermesPet 崩溃文件，点「一键上报到 GitHub」→ 完整日志复制到剪贴板 + 跳转 issue new 页面，用户粘贴提交即可。**零后端、零隐私顾虑**，日志只发到你看到的 GitHub issue
-
----
-
-## 🚀 快速开始
-
-### 方式 A：下载 DMG 直接装（推荐，无需 Xcode）
-
-1. 去 [Releases 页面](https://github.com/basionwang-bot/HermesPet/releases) 下载最新 `HermesPet-x.x.dmg`
-2. 双击 DMG → 把"Hermes 桌宠"拖进应用程序
-3. 右键打开（首次需要绕过 Gatekeeper，因为是 ad-hoc 签名）
-4. 在菜单栏点 ✦ → 齿轮 ⚙️ → AI 后端 → **服务商下拉选一家**（DeepSeek / 智谱 / Kimi / MiniMax / OpenAI）→ 粘贴 API Key → 开聊
-
-没有 API Key？设置面板里每个服务商旁都有一个**"获取 Key"链接**直达官方申请页。
-
-### 方式 B：从源码构建（开发者）
-
-需要 macOS 14+ 和 Xcode 命令行工具：
+需要 macOS 14+ 和完整 Xcode：
 
 ```bash
-git clone https://github.com/basionwang-bot/HermesPet.git
-cd HermesPet
+git clone https://github.com/simpledavid/opencrab.git
+cd opencrab
 ./install.sh
 ```
 
-`install.sh` 会构建 → 装到 `/Applications/Hermes 桌宠.app` → 启动。
-推荐有 Apple Development 证书 —— TCC 权限永久稳定。
+`install.sh` 会构建并安装到 `/Applications/Tars.app`。
 
-### 进阶：解锁 CLI 模式（可选）
+## 快捷键
 
-下面这两个 CLI 都是**可选**的。装了能解锁更强能力（文件读写 / 跑命令 / 生图），不装也完全能用在线 AI 聊天：
-
-- **Claude Code**：[官方安装指南](https://docs.claude.com/en/docs/agents-and-tools/claude-code/overview)
-- **OpenAI Codex**：[官方仓库](https://github.com/openai/codex)
-
-装好后**重启 HermesPet 自动检测路径**（启动时会跑一次 `zsh -lic 'command -v ...'`，能读到你 `~/.zshrc` 加载的真实 PATH）。如果检测不到，进设置面板对应 mode 的卡片点"重新检测"按钮即可。
-
-### 首次授权
-
-| 权限 | 触发时机 | 用途 |
-|---|---|---|
-| 屏幕录制 | 首次 `⌘⇧J` 截图 | ScreenCaptureKit |
-| 麦克风 | 首次 `⌘⇧V` | 录音 |
-| 语音识别 | 首次 `⌘⇧V` | SFSpeechRecognizer |
-| Accessibility | 快问浮窗读选中文本 | AX API |
-| Finder 自动化 | 开启"Clawd 桌面巡视" | osascript 读桌面图标 |
-
-授权完任一权限后建议**完全退出再打开**（菜单栏 ✦ → 退出 → 重开），新进程才能读到权限。
-
----
-
-## 🎯 四种 AI 后端
-
-| Mode | 图标 | 适合场景 | 准备工作 |
-|---|---|---|---|
-| **在线 AI** ⭐ | ☁ | 对话 / 翻译 / 写作 / 看图 —— **零依赖，开箱即用** | 选服务商 + 填 API Key（DeepSeek / 智谱 / Kimi / MiniMax / OpenAI 内置预设） |
-| **Hermes** | ✦ | 对话型任务，走自部署的 OpenAI 兼容 Gateway | 接 [Hermes Gateway](https://github.com/NousResearch/hermes-gateway) 或自部署兼容 API |
-| **Claude Code** | ⌨ | 改文件 / 跑命令 / 深度编程 | 装 [`claude` CLI](https://docs.claude.com/en/docs/agents-and-tools/claude-code/overview)（可选） |
-| **Codex** | ✨ | 生图 + 代码 | 装 OpenAI 官方 Codex CLI + `codex login`（可选） |
-
-打开聊天 → ⚙️ → AI 后端 → 填配置。四个 mode 的配置**完全独立保存**，**新建对话时继承"上次用的"那个 mode 作为默认**。
-
-新用户默认就在「在线 AI」模式，欢迎页有引导卡片直接跳设置。切到 Claude / Codex 时如果检测不到对应 CLI，会 toast 提示并跳过这一档。
-
----
-
-## ⌨️ 快捷键
-
-**全局热键**（Carbon Event Manager 注册，在任何 app 里都能触发）：
-
-| 组合 | 功能 |
+| 快捷键 | 功能 |
 |---|---|
-| `⌘⇧H` | 呼出 / 收回聊天窗口 |
-| `⌘⇧J` | 截当前屏幕并附加到对话 |
-| `⌘⇧V` | 按住说话，松开自动发送 |
-| `⌘⇧P` | 把当前对话最新 AI 回复 Pin 到桌面 |
-| `⌘⇧Space` | Spotlight 风快问浮窗 |
+| `⌘⇧H` | 呼出或收回聊天窗 |
+| `⌘⇧J` | 截屏并附加到当前对话 |
+| `⌘⇧V` | 按住说话，松开发送 |
+| `⌘⇧Space` | 快问 |
+| `⌘⇧P` | Pin 当前对话最新 AI 回复 |
+| `⌘N` | 新对话 |
+| `⌘1` ~ `⌘8` | 切换到指定对话 |
 
-**聊天窗内快捷键**（窗口聚焦时生效）：
-
-| 组合 | 功能 |
-|---|---|
-| `⌘N` | 新建对话 |
-| `⌘[` / `⌘]` | 切换上一个 / 下一个对话 |
-| `⌘1` ~ `⌘8` | 直接切到对应序号对话 |
-| `⌘⌫` | 关闭当前对话 |
-
----
-
-## 🧰 构建脚本
+## 构建脚本
 
 | 脚本 | 用途 |
 |---|---|
-| `./build.sh` | 仅构建 `.app` 到 `./HermesPet.app`（自动选证书） |
-| `./install.sh` | 构建 + 装到 `/Applications` + 启动（**日常用这个**） |
-| `./make-dmg.sh` | 生成给别人分发的 DMG（ad-hoc 签名，接收方需右键打开） |
+| `./build.sh` | 构建项目目录下的 `Tars.app` |
+| `./install.sh` | 构建、安装到 `/Applications/Tars.app` 并启动 |
+| `./make-dmg.sh` | 生成 Apple Silicon 与 Intel DMG |
 
----
+## 数据与兼容
 
-## 📁 项目结构
+为了保留旧版本用户的数据、TCC 权限和本地工具配置，以下内部路径与标识继续沿用：
 
-```
-Sources/
-├── HermesPetApp.swift         # AppDelegate，统筹各 controller / 全局热键
-├── ChatViewModel.swift        # 多对话状态 + 流式请求 + 持久化
-├── ChatView.swift             # 聊天主界面
-├── ChatComponents.swift       # MessageBubble / 输入框 / SendButton
-├── ChatWindowController.swift # 聊天 NSWindow 展开/收回动画
-├── DynamicIslandController.swift # 顶部刘海胶囊
-├── ClawdWalkOverlay.swift     # 桌面 Clawd + 巡视 + 拖动嗅文件
-├── PinCardOverlay.swift       # 桌面 Pin 卡片
-├── QuickAskWindow.swift       # Spotlight 风快问浮窗
-├── IntelligenceOverlay.swift  # 语音热键时的 AI 光环
-├── VoiceInputController.swift # 录音 + SFSpeechRecognizer
-├── ScreenCapture.swift        # ScreenCaptureKit 截屏
-├── DesktopIconReader.swift    # osascript 读 Finder 桌面图标位置
-├── APIClient.swift            # Hermes HTTP 流式
-├── ClaudeCodeClient.swift     # spawn claude -p
-├── CodexClient.swift          # spawn codex exec + 图片捕获
-├── MarkdownRenderer.swift     # 自定义 Markdown（含 GFM 表格 + 选项卡片）
-├── ActivityRecorder.swift     # 用户活动采集（给早报用）
-├── MorningBriefingService.swift # 每日早报生成
-└── ...
-```
-
-技术决策细节（踩过的坑 / Swift 6 isolation / macOS 26 layout cycle）见 [CLAUDE.md](./CLAUDE.md)。路线图见 [TODO.md](./TODO.md)。
-
----
-
-## 🗂 数据存储 / 隐私
-
-| 路径 | 内容 |
+| 路径或标识 | 用途 |
 |---|---|
-| `~/.hermespet/conversations.json` | 所有对话历史（不含图片 Data） |
-| `~/.hermespet/images/` | 用户附图 / Codex 生图持久化 |
-| `~/.hermespet/pins.json` | Pin 桌面卡片 |
-| `~/Library/Caches/HermesPet/` | 截图临时区 + Clawd 临时缓存 |
+| `com.nousresearch.hermespet` | 兼容 bundle ID |
+| `~/.hermespet/` | 对话、图片、Pin、活动数据和模型配置 |
+| `~/Library/Application Support/HermesPet/` | opencode runtime 与会话目录 |
+| `~/Library/Caches/HermesPet/` | 临时附件与截图 |
 
-**隐私边界**：
-- 所有 AI 调用都走你自己配置的后端（Hermes 自托管 / Claude Code 你的 OAuth / Codex 你的 OpenAI 账号），项目本身不上送任何数据
-- Clawd 桌面巡视的文件名进 Hermes 前过本地黑名单（薪资 / 合同 / 密码 / .env 等关键词整条丢弃）
-- 早报数据全部在本地 SQLite，不出机器
+这些旧名属于内部兼容层，用户可见产品名统一为 Tars。
 
----
+## 隐私
 
-## 🤝 欢迎一起来玩
+- API 请求只发送到用户选择的服务商或本机 agent
+- 活动数据和对话记录默认保存在本机
+- 桌面巡视会过滤包含密码、合同、薪资、`.env` 等敏感关键词的文件名
+- Tars 不包含独立遥测后端
 
-HermesPet 还是个一个人维护的开源项目，每一个 issue / PR / star 都是真的能让我开心半天的那种支持。
+技术约束与开发约定见 [CLAUDE.md](./CLAUDE.md)。
 
-**有 Bug / 用得不顺 / 想要某个功能**：直接开 [Issue](https://github.com/basionwang-bot/HermesPet/issues) 说说就行，描述清楚机型 + 系统版本 + 复现步骤，我会尽快看。
-
-**想动手改代码**：开干前建议先开 issue 聊聊方向，避免做出来跟项目走向不一致白费力气。代码风格上没什么硬性要求，跟着现有文件写就好。
-
-**用着觉得不错**：欢迎点个 star ⭐ 或者把它分享给可能感兴趣的朋友 —— 让更多人能用上是这个项目最大的成就感来源。
-
----
-
-## 📄 License
+## License
 
 [Apache License 2.0](./LICENSE)
-
----
-
-## ⭐ Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=basionwang-bot/HermesPet&type=Date)](https://star-history.com/#basionwang-bot/HermesPet&Date)
-
----
-
-<div align="center">
-
-Made with ✦ on a MacBook · 桌面 AI 应当鲜活
-
-</div>

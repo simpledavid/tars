@@ -1,6 +1,6 @@
 import AppKit
 
-/// 全局鼠标位置追踪 —— 让 Clawd 的眼睛跟着鼠标看。
+/// 全局鼠标位置追踪 —— 让 TARS 朝鼠标方向轻微倾斜。
 ///
 /// 用 NSEvent.addGlobalMonitorForEvents 监听全屏鼠标移动（不需要任何 entitlement）。
 /// 每次移动计算鼠标在带刘海屏的 X 比例，分成 left/center/right 三档：
@@ -9,7 +9,7 @@ import AppKit
 ///   - 其余     → .center
 ///
 /// 仅在 area **变化**时 post `HermesPetMouseAreaChanged` 通知，所以接收方
-/// （ClaudeKnotSprite）不需要节流，自动只在状态切换时刷新一次 pose。
+/// TarsSprite 不需要高频通知，只在区域变化时刷新一次。
 @MainActor
 final class MouseTrackingController {
     static let shared = MouseTrackingController()

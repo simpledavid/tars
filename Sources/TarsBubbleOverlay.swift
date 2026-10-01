@@ -1,9 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// Clawd 头顶/旁边的情绪气泡 —— 让 Claude 模式的桌宠有"内心独白"。
+/// TARS 头顶与灵动岛旁边的状态气泡。
 ///
-/// 触发时机（仅 Claude 模式生效）：
+/// 触发时机：
 ///   - 任务超过 30s：「等等，快好了…」
 ///   - 任务超过 90s：「emm，再花点时间」
 ///   - 任务出错（success=false）：「糟糕 😵」
@@ -11,11 +11,11 @@ import SwiftUI
 /// 实现：单独 NSWindow，level .statusBar，浮在灵动岛胶囊**右下方**，
 /// 1.8s 自动淡出。跟 VoiceTranscriptOverlay 同款轻量模式
 @MainActor
-final class ClawdBubbleOverlayController {
-    static let shared = ClawdBubbleOverlayController()
+final class TarsBubbleOverlayController {
+    static let shared = TarsBubbleOverlayController()
 
     private var window: NSWindow?
-    private var hostingView: NSHostingView<ClawdBubbleView>?
+    private var hostingView: NSHostingView<TarsBubbleView>?
     private let viewState = BubbleState()
     private var hideTask: Task<Void, Never>?
 
@@ -28,7 +28,7 @@ final class ClawdBubbleOverlayController {
     /// 触发气泡显示。text 是要展示的文字，duration 默认 1.8s
     static func show(_ text: String, duration: TimeInterval = 1.8) {
         NotificationCenter.default.post(
-            name: .init("HermesPetClawdBubble"),
+            name: .init("HermesPetTarsBubble"),
             object: nil,
             userInfo: ["text": text, "duration": duration]
         )
@@ -38,7 +38,7 @@ final class ClawdBubbleOverlayController {
 
     private func registerNotifications() {
         NotificationCenter.default.addObserver(
-            forName: .init("HermesPetClawdBubble"),
+            forName: .init("HermesPetTarsBubble"),
             object: nil,
             queue: .main
         ) { [weak self] note in
@@ -90,7 +90,7 @@ final class ClawdBubbleOverlayController {
         w.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         w.isReleasedWhenClosed = false
 
-        let host = NSHostingView(rootView: ClawdBubbleView(state: viewState))
+        let host = NSHostingView(rootView: TarsBubbleView(state: viewState))
         host.frame = NSRect(x: 0, y: 0, width: 200, height: 50)
         host.autoresizingMask = [.width, .height]
         w.contentView = host
@@ -99,8 +99,7 @@ final class ClawdBubbleOverlayController {
         self.hostingView = host
     }
 
-    /// 浮在带刘海屏的左上方位置 —— 在灵动岛胶囊**右下方**，与 Clawd（在灵动岛左耳）斜对应
-    /// 实际是给 Clawd 的"思考泡"感
+    /// 浮在灵动岛下方，与左耳的 TARS 斜向对应。
     private func positionWindow() {
         guard let window = window else { return }
         let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 })
@@ -115,8 +114,7 @@ final class ClawdBubbleOverlayController {
         let estimatedWidth: CGFloat = min(360, max(100, CGFloat(charCount) * 14 + 36))
         let windowHeight: CGFloat = 38
 
-        // x：刘海中心 - 灵动岛宽度一半 - 一段距离 → 出现在灵动岛左耳（Clawd 所在）的左下方
-        // 这样视觉上像 Clawd 头顶/左侧冒气泡
+        // x：刘海中心 - 灵动岛宽度一半 - 一段距离。
         let bubbleX = frame.midX - 200 - estimatedWidth / 2
         // y：灵动岛胶囊本体下方 24pt
         let bubbleY = frame.maxY - notchHeight - 8 - windowHeight - 18
@@ -139,12 +137,11 @@ final class BubbleState {
 
 // MARK: - SwiftUI Bubble
 
-/// Clawd 头顶气泡 —— 白色卡片 + 黑字 + 小三角指向胶囊（向右上）
-struct ClawdBubbleView: View {
+/// TARS 状态气泡。
+struct TarsBubbleView: View {
     @Bindable var state: BubbleState
 
-    /// Anthropic Clawd 品牌橘 #D77757
-    private static let clawdOrange = Color(red: 215.0/255, green: 119.0/255, blue: 87.0/255)
+    private static let tarsBlue = Color(red: 0.35, green: 0.82, blue: 1.0)
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -161,7 +158,7 @@ struct ClawdBubbleView: View {
                     )
                     .overlay(
                         Capsule(style: .continuous)
-                            .stroke(Self.clawdOrange.opacity(0.35), lineWidth: 0.6)
+                            .stroke(Self.tarsBlue.opacity(0.35), lineWidth: 0.6)
                     )
                     .shadow(color: .black.opacity(0.30), radius: 10, y: 4)
                     .transition(.scale(scale: 0.7, anchor: .topTrailing)

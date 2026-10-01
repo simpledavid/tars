@@ -1,6 +1,6 @@
 import Foundation
 
-/// 在线 AI 的易懂回复偏好。UI 面向用户展示这个，而不是直接暴露模型字符串。
+/// AI 助手的易懂回复偏好。UI 面向用户展示这个，而不是直接暴露模型字符串。
 enum DirectResponsePreference: String, CaseIterable, Identifiable, Hashable {
     case fast
     case balanced
@@ -152,17 +152,6 @@ struct ProviderPreset: Identifiable, Hashable {
         signupURL: nil
     )
 
-    /// 老用户 / 自托管 Hermes Gateway 的兜底预设（baseURL 含 localhost）。
-    /// 用户已经配过 http://localhost:8642 的话设置面板会识别成这个。
-    static let hermesLocal = ProviderPreset(
-        id: "hermes-local",
-        displayName: "Hermes Gateway（本地）",
-        baseURL: "http://localhost:8642/v1",
-        defaultModel: "hermes-agent",
-        altModels: [],
-        signupURL: nil
-    )
-
     /// 根据当前已存的 baseURL 反查应该选哪个预设（设置面板首次打开时判断当前在用哪家）。
     /// 完全匹配优先；找不到就归到"自定义"，让用户能编辑完整 URL。
     static func detect(baseURL: String) -> ProviderPreset {
@@ -170,9 +159,6 @@ struct ProviderPreset: Identifiable, Hashable {
         let normalized = baseURL.trimmingCharacters(in: .whitespaces)
             .replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
         if normalized.isEmpty { return all[0] }   // 全新用户默认第一项
-        if normalized.contains("localhost") || normalized.contains("127.0.0.1") {
-            return hermesLocal
-        }
         for preset in all {
             let presetURL = preset.baseURL.replacingOccurrences(of: "/+$", with: "", options: .regularExpression)
             if normalized == presetURL { return preset }

@@ -49,8 +49,8 @@ final class UpdateChecker {
 
     // MARK: - 配置
 
-    private static let owner = "basionwang-bot"
-    private static let repo = "HermesPet"
+    private static let owner = "simpledavid"
+    private static let repo = "opencrab"
     private static let checkInterval: TimeInterval = 24 * 60 * 60   // 24h
 
     private var periodicTask: Task<Void, Never>?
@@ -91,7 +91,7 @@ final class UpdateChecker {
 
         var req = URLRequest(url: url, timeoutInterval: 15)
         req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        req.setValue("HermesPet/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+        req.setValue("Tars/\(currentVersion)", forHTTPHeaderField: "User-Agent")
 
         do {
             let (data, response) = try await URLSession.shared.data(for: req)
@@ -174,7 +174,7 @@ final class UpdateChecker {
         let downloadsDir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory() + "/Downloads")
         let fileName = dlURL.lastPathComponent.isEmpty
-            ? "HermesPet-\(latestVersion ?? "latest").dmg"
+            ? "Tars-\(latestVersion ?? "latest").dmg"
             : dlURL.lastPathComponent
         let destination = downloadsDir.appendingPathComponent(fileName)
 
@@ -211,7 +211,7 @@ final class UpdateChecker {
                 let data = pipe.fileHandleForReading.readDataToEndOfFile()
                 let output = String(data: data, encoding: .utf8) ?? ""
                 // hdiutil attach 输出格式示例：
-                //   /dev/disk6s1	Apple_HFS	/Volumes/Hermes 桌宠
+                //   /dev/disk6s1	Apple_HFS	/Volumes/Tars
                 // 我们 grep `/Volumes/` 行第三列拿挂载路径
                 if let line = output.split(separator: "\n").first(where: { $0.contains("/Volumes/") }) {
                     let parts = line.split(whereSeparator: \.isWhitespace)
@@ -235,7 +235,7 @@ final class UpdateChecker {
         let alert = NSAlert()
         alert.messageText = "新版已挂载，请拖入应用程序"
         alert.informativeText = """
-        Finder 已经打开新版 DMG。请把里面的「Hermes 桌宠」拖到旁边的「应用程序」文件夹替换旧版即可。
+        Finder 已经打开新版 DMG。请把里面的「Tars」拖到旁边的「应用程序」文件夹替换旧版即可。
 
         替换完成后退出当前版本（菜单栏右键 → 退出），重新打开新版本生效。
         """

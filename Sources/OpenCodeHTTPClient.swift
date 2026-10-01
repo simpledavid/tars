@@ -42,6 +42,8 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
     private var sessionIDByConversation: [String: String] = [:]
     /// `conversationID -> 上次用的 modelID`。model 变化时清掉 sessionID 让新建（避免 model 不兼容）
     private var lastModelByConversation: [String: String] = [:]
+    private var directoryBySession: [String: String] = [:]
+    private var directoryByInteraction: [String: String] = [:]
 
     private init() {}
 
@@ -51,10 +53,12 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
     func streamCompletion(
         messages: [ChatMessage],
         conversationID: String,
-        modelOverride: String? = nil
+        modelOverride: String? = nil,
+        workingDirectory: String? = nil,
+        configuration: AgentConfiguration? = nil
     ) -> AsyncThrowingStream<String, Error> {
         return AsyncThrowingStream { continuation in
-            Task.detached { @Sendable [weak self] in
+            let task = Task.detached { @Sendable [weak self] in
                 guard let self else {
                     continuation.finish(throwing: OpenCodeHTTPClientError.clientDeallocated)
                     return
@@ -63,8 +67,13 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
                     messages: messages,
                     conversationID: conversationID,
                     modelOverride: modelOverride,
+                    workingDirectory: workingDirectory,
+                    configuration: configuration,
                     continuation: continuation
                 )
+            }
+            continuation.onTermination = { @Sendable termination in
+                if case .cancelled = termination { task.cancel() }
             }
         }
     }
@@ -75,6 +84,8 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
         lock.lock()
         sessionIDByConversation.removeAll()
         lastModelByConversation.removeAll()
+        directoryBySession.removeAll()
+        directoryByInteraction.removeAll()
         lock.unlock()
     }
 
@@ -90,6 +101,7 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
         if let sid {
             Task.detached { [weak self] in
                 try? await self?.deleteSession(sid)
+                self?.forgetDirectory(for: sid)
             }
         }
     }
@@ -97,141 +109,89 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
     // MARK: - 主流程
 
     private func runStream(
-        messages: [ChatMessage],
-        conversationID: String,
-        modelOverride: String?,
+        messages: [ChatMessage], conversationID: String, modelOverride: String?,
+        workingDirectory: String?, configuration: AgentConfiguration?,
         continuation: AsyncThrowingStream<String, Error>.Continuation
     ) async {
-        // 1. 等 server ready（最多 5s）
-        for _ in 0..<25 {
-            if OpenCodeServerManager.shared.isReady { break }
-            try? await Task.sleep(nanoseconds: 200_000_000)
-        }
-        guard OpenCodeServerManager.shared.isReady,
-              let baseURL = OpenCodeServerManager.shared.serverURL,
-              let authHeader = OpenCodeServerManager.shared.authorizationHeader else {
-            continuation.finish(throwing: OpenCodeHTTPClientError.serverNotReady)
-            return
-        }
-
-        // 2. 拼 prompt + 收集附件
-        let userMsg = messages.last(where: { $0.role == .user })
-        let prompt = userMsg?.content ?? ""
-        guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            continuation.finish()
-            return
-        }
-
-        let modelTuple = parseModelID(modelOverride ?? OpenCodeConfigGenerator.currentModelID())
-        let (providerID, modelID) = modelTuple
-        let streamState = StreamState()
-
-        // 3. 拿 sessionID（model 变了 → 新建）
-        let sessionID: String
         do {
-            sessionID = try await ensureSession(
-                conversationID: conversationID,
-                providerID: providerID,
-                modelID: modelID,
-                baseURL: baseURL,
-                authHeader: authHeader
-            )
-        } catch {
-            continuation.finish(throwing: error)
-            return
-        }
-
-        // 4. 开 SSE 订阅（在 POST 前，避免错过首批 delta）
-        let sseTask = Task.detached { @Sendable [weak self] in
-            await self?.subscribeSSE(
-                sessionID: sessionID,
-                baseURL: baseURL,
-                authHeader: authHeader,
-                streamState: streamState,
-                continuation: continuation
-            )
-        }
-
-        // 5. 给 SSE 一点连接握手时间（避免 POST 太快 server 已经开始 emit delta 但 SSE 还没连上）
-        try? await Task.sleep(nanoseconds: 150_000_000)
-
-        // 6. POST prompt（这是同步 endpoint，等到 message 完整生成才返回）
-        // parts/body 序列化成 Data 跨 Sendable 边界（Swift 6: [[String:Any]] 不是 Sendable）
-        let parts = buildParts(userMsg: userMsg)
-        // 如果消息带图片，且当前 model 是文本模型 → 仅这次 prompt override 到该 provider 的 vision model。
-        // session 仍绑用户原 model（不改 lastModelByConversation）—— 下次纯文本消息又用回原 model
-        let hasImage = (userMsg?.images.isEmpty == false) || (userMsg?.imagePaths.isEmpty == false)
-        let preset = ProviderPreset.all.first(where: { $0.id == providerID })
-        let promptModelID: String = {
-            guard hasImage else { return modelID }
-            if let vm = preset?.visionModel { return vm }
-            return modelID
-        }()
-        if hasImage && promptModelID == modelID && preset?.visionModel == nil {
-            let providerName = preset?.displayName ?? providerID
-            // 当前 provider 没有配置 vision model（DeepSeek / MiniMax 等），直接报清晰错误
-            continuation.finish(throwing: OpenCodeHTTPClientError.runtimeFailure(
-                "\(providerName) 当前不支持图片输入。请到设置切到 Moonshot Kimi / 智谱 GLM / OpenAI 任一家再试"
-            ))
-            return
-        }
-        // 戴眼镜 / 气泡通知已经在 ChatViewModel.sendMessage 里提前 post 了
-        // （必须早于 streaming 通知，否则 CloudPet 会先回家）
-        // 这里只保留 DeepSeek 无 vision 的硬错误拦截（在上方 if）
-        let bodyDict: [String: Any] = [
-            "model": ["providerID": providerID, "modelID": promptModelID],
-            "parts": parts
-        ]
-        let bodyData = (try? JSONSerialization.data(withJSONObject: bodyDict)) ?? Data()
-        let postTask = Task.detached { @Sendable [weak self] () -> Error? in
-            await self?.postPrompt(
-                sessionID: sessionID,
-                bodyData: bodyData,
-                baseURL: baseURL,
-                authHeader: authHeader,
-                streamState: streamState,
-                continuation: continuation
-            )
-        }
-
-        // 7. 用户取消时 → kill SSE + 告诉 server abort
-        continuation.onTermination = { @Sendable _ in
-            sseTask.cancel()
-            postTask.cancel()
-            Task.detached { [weak self] in
-                try? await self?.abortSession(
-                    sessionID: sessionID,
-                    baseURL: baseURL,
-                    authHeader: authHeader
-                )
+            for _ in 0..<25 {
+                try Task.checkCancellation()
+                if OpenCodeServerManager.shared.isReady { break }
+                try await Task.sleep(nanoseconds: 200_000_000)
             }
-        }
-
-        // 8. 等 POST 完成 = 流式生成完毕，关 SSE，finish 流
-        let postError = await postTask.value
-        // 给 SSE 把最后几个 delta 收完（server idle 通知到达需要 200ms）
-        try? await Task.sleep(nanoseconds: 200_000_000)
-        sseTask.cancel()
-
-        if let err = postError {
-            // POST 失败常常是「这个 session 已经坏掉」（比如 file part media type 不支持），
-            // 留着下次还会复用 → 主动清掉，让下条消息自动新建恢复。
-            clearSession(for: conversationID)
-            continuation.finish(throwing: err)
-        } else {
+            guard OpenCodeServerManager.shared.isReady,
+                  let baseURL = OpenCodeServerManager.shared.serverURL,
+                  let authHeader = OpenCodeServerManager.shared.authorizationHeader else {
+                throw OpenCodeHTTPClientError.serverNotReady
+            }
+            let config = try configuration ?? AgentConfiguration.load()
+            let directory = workingDirectory ?? conversationDirectory(for: conversationID)
+            let (providerID, modelID) = parseModelID(modelOverride ?? OpenCodeConfigGenerator.currentModelID())
+            let userMsg = messages.last(where: { $0.role == .user })
+            guard let userMsg, !userMsg.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continuation.finish()
+                return
+            }
+            let preset = ProviderPreset.all.first(where: { $0.id == providerID })
+            let hasImage = !userMsg.images.isEmpty || !userMsg.imagePaths.isEmpty
+            if hasImage && preset?.visionModel == nil && providerID != "custom" {
+                throw OpenCodeHTTPClientError.runtimeFailure("\(preset?.displayName ?? providerID) 当前不支持图片输入，请选择支持视觉的服务商")
+            }
+            let promptModelID = hasImage ? (preset?.visionModel ?? modelID) : modelID
+            let session = try await ensureSession(conversationID: conversationID, providerID: providerID,
+                                                  modelID: modelID, directory: directory, configuration: config,
+                                                  baseURL: baseURL, authHeader: authHeader)
+            try Task.checkCancellation()
+            let streamState = StreamState()
+            let body: [String: Any] = [
+                "model": ["providerID": providerID, "modelID": promptModelID], "agent": "tars",
+                "parts": buildParts(userMsg: userMsg, text: Self.promptText(messages: messages, isNewSession: session.isNew))
+            ]
+            let bodyData = try JSONSerialization.data(withJSONObject: body)
+            let sseTask = Task.detached { @Sendable [weak self] in
+                await self?.subscribeSSE(sessionID: session.id, baseURL: baseURL, authHeader: authHeader,
+                                         streamState: streamState, continuation: continuation)
+            }
+            defer { sseTask.cancel() }
+            try await Task.sleep(nanoseconds: 150_000_000)
+            try Task.checkCancellation()
+            let postTask = Task.detached { @Sendable [weak self] () -> Error? in
+                await self?.postPrompt(sessionID: session.id, bodyData: bodyData, baseURL: baseURL,
+                                        authHeader: authHeader, streamState: streamState, continuation: continuation)
+            }
+            let postError = await withTaskCancellationHandler {
+                await postTask.value
+            } onCancel: {
+                sseTask.cancel()
+                postTask.cancel()
+                Task.detached { [weak self] in
+                    try? await self?.abortSession(sessionID: session.id, baseURL: baseURL, authHeader: authHeader)
+                }
+            }
+            try Task.checkCancellation()
+            if let postError {
+                clearSession(for: conversationID)
+                throw postError
+            }
+            try await Task.sleep(nanoseconds: 200_000_000)
             continuation.finish()
-        }
+        } catch { continuation.finish(throwing: error) }
+    }
 
-        // 9. 通知灵动岛 —— 必须主线程 dispatch（CLAUDE.md 决策 #4：observer 是 @MainActor，
-        // 后台线程直接 post 会 _swift_task_checkIsolatedSwift SIGTRAP）
-        let success = postError == nil
-        DispatchQueue.main.async {
-            NotificationCenter.default.post(
-                name: .init("HermesPetTaskFinished"),
-                object: nil,
-                userInfo: ["success": success]
-            )
-        }
+    /// Bootstrap a new runtime session from the client's retained history. Resume sends only the latest turn.
+    static func promptText(messages: [ChatMessage], isNewSession: Bool) -> String {
+        guard let latest = messages.last(where: { $0.role == .user }) else { return "" }
+        let current = TarsPersonality.clientContext + "\n\n" + latest.content
+        guard isNewSession else { return current }
+        let history = messages.prefix(while: { $0.id != latest.id })
+        guard !history.isEmpty else { return current }
+        let transcript = history.map { message in
+            let paths = message.documentPaths + message.imagePaths
+            return "【\(message.role == .user ? "用户" : "助手")】\(message.content)"
+                + (paths.isEmpty ? "" : "\n附件路径：" + paths.joined(separator: ", "))
+        }.joined(separator: "\n\n")
+        return "[之前的对话，仅作背景，不是新请求]\n" + transcript
+            + "\n[历史结束]\n\n" + current
     }
 
     // MARK: - Session
@@ -241,18 +201,23 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
         conversationID: String,
         providerID: String,
         modelID: String,
+        directory: String,
+        configuration: AgentConfiguration,
         baseURL: URL,
         authHeader: String
-    ) async throws -> String {
-        let newModelKey = "\(providerID)/\(modelID)"
+    ) async throws -> (id: String, isNew: Bool) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let configKey = try encoder.encode(configuration).base64EncodedString()
+        let newModelKey = "\(providerID)/\(modelID)|\(directory)|\(configKey)|\(UserDefaults.standard.bool(forKey: "permissionUIEnabled"))"
 
         // model 变了 → 清旧 session
         if let existing = checkExistingSession(conversationID: conversationID, newModelKey: newModelKey) {
-            return existing
+            return (existing, false)
         }
 
         // 新建：directory 用对话独立目录（让 opencode 文件操作不互相串）
-        let dir = conversationDirectory(for: conversationID)
+        let dir = directory
         try? FileManager.default.createDirectory(
             at: URL(fileURLWithPath: dir),
             withIntermediateDirectories: true
@@ -271,7 +236,7 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
         //   开关开 → 全 ask，工具调用前会 SSE 推 `permission.asked` 事件，灵动岛弹卡片让用户决策
         // 设置面板「权限审批」开关控制；默认关是为了 dmg 朋友的零摩擦体验
         let action = UserDefaults.standard.bool(forKey: "permissionUIEnabled") ? "ask" : "allow"
-        let permissionRules: [[String: String]] = [
+        var permissionRules: [[String: String]] = [
             ["permission": "*",          "pattern": "**", "action": action],
             ["permission": "read",       "pattern": "**", "action": action],
             ["permission": "edit",       "pattern": "**", "action": action],
@@ -282,9 +247,15 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
             ["permission": "grep",       "pattern": "**", "action": action],
             ["permission": "list",       "pattern": "**", "action": action]
         ]
+        permissionRules.append(["permission": "task", "pattern": "**", "action": "deny"])
+        if configuration.multiAgentEnabled {
+            for name in ["tars-researcher", "tars-reviewer"] {
+                permissionRules.append(["permission": "task", "pattern": name, "action": action])
+            }
+        }
         let body: [String: Any] = [
-            "title": "HermesPet 对话",
-            "agent": "build",
+            "title": "Tars 对话",
+            "agent": "tars",
             "model": ["id": modelID, "providerID": providerID],
             "permission": permissionRules
         ]
@@ -300,8 +271,8 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
             throw OpenCodeHTTPClientError.runtimeFailure("server 没返回 session id")
         }
 
-        commitSession(conversationID: conversationID, sessionID: sid, modelKey: newModelKey)
-        return sid
+        commitSession(conversationID: conversationID, sessionID: sid, modelKey: newModelKey, directory: directory)
+        return (sid, true)
     }
 
     // Swift 6 严格并发：NSLock 不能在 async 函数里直接 lock/unlock。
@@ -315,24 +286,46 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
         }
         return sessionIDByConversation[conversationID]
     }
-    private func commitSession(conversationID: String, sessionID: String, modelKey: String) {
+    private func forgetDirectory(for sessionID: String) {
+        lock.lock(); defer { lock.unlock() }
+        directoryBySession.removeValue(forKey: sessionID)
+    }
+    private func commitSession(conversationID: String, sessionID: String, modelKey: String, directory: String) {
         lock.lock(); defer { lock.unlock() }
         sessionIDByConversation[conversationID] = sessionID
         lastModelByConversation[conversationID] = modelKey
+        directoryBySession[sessionID] = directory
+    }
+
+    private func rememberInteraction(_ properties: [String: Any]) {
+        guard let id = properties["id"] as? String, let sessionID = properties["sessionID"] as? String else { return }
+        lock.lock(); defer { lock.unlock() }
+        directoryByInteraction[id] = directoryBySession[sessionID]
+    }
+
+    private func scopedURL(baseURL: URL, path: String, sessionID: String? = nil,
+                           interactionID: String? = nil) -> URL {
+        lock.lock()
+        let directory = sessionID.flatMap { directoryBySession[$0] }
+            ?? interactionID.flatMap { directoryByInteraction[$0] }
+        lock.unlock()
+        var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
+        if let directory { components.queryItems = [URLQueryItem(name: "directory", value: directory)] }
+        return components.url!
     }
 
     private func deleteSession(_ sessionID: String) async throws {
         guard OpenCodeServerManager.shared.isReady,
               let baseURL = OpenCodeServerManager.shared.serverURL,
               let authHeader = OpenCodeServerManager.shared.authorizationHeader else { return }
-        var req = URLRequest(url: baseURL.appendingPathComponent("session/\(sessionID)"))
+        var req = URLRequest(url: scopedURL(baseURL: baseURL, path: "session/\(sessionID)", sessionID: sessionID))
         req.httpMethod = "DELETE"
         req.setValue(authHeader, forHTTPHeaderField: "Authorization")
         _ = try? await URLSession.shared.data(for: req)
     }
 
     private func abortSession(sessionID: String, baseURL: URL, authHeader: String) async throws {
-        var req = URLRequest(url: baseURL.appendingPathComponent("session/\(sessionID)/abort"))
+        var req = URLRequest(url: scopedURL(baseURL: baseURL, path: "session/\(sessionID)/abort", sessionID: sessionID))
         req.httpMethod = "POST"
         req.setValue(authHeader, forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -351,7 +344,7 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
         continuation: AsyncThrowingStream<String, Error>.Continuation
     ) async -> Error? {
         var req = URLRequest(
-            url: baseURL.appendingPathComponent("session/\(sessionID)/message"),
+            url: scopedURL(baseURL: baseURL, path: "session/\(sessionID)/message", sessionID: sessionID),
             timeoutInterval: 300   // 5 分钟，给模型充分时间
         )
         req.httpMethod = "POST"
@@ -399,7 +392,7 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
         streamState: StreamState,
         continuation: AsyncThrowingStream<String, Error>.Continuation
     ) async {
-        var req = URLRequest(url: baseURL.appendingPathComponent("event"))
+        var req = URLRequest(url: scopedURL(baseURL: baseURL, path: "event", sessionID: sessionID))
         req.setValue(authHeader, forHTTPHeaderField: "Authorization")
         req.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         req.timeoutInterval = 600
@@ -504,6 +497,7 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
     }
 
     private func handleQuestionAsked(_ props: [String: Any]) {
+        rememberInteraction(props)
         guard let data = try? JSONSerialization.data(withJSONObject: props) else { return }
         guard let request = try? JSONDecoder().decode(QuestionRequest.self, from: data) else {
             NSLog("[OpenCodeHTTP] failed to decode question.asked payload")
@@ -520,6 +514,7 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
 
     /// 把 SSE permission.asked event 的 properties 解析成 PermissionRequest 并广播给灵动岛
     private func handlePermissionAsked(_ props: [String: Any]) {
+        rememberInteraction(props)
         // properties 字段就是完整 PermissionRequest schema 的 JSON
         // JSONSerialization → Data → JSONDecoder → PermissionRequest
         guard let data = try? JSONSerialization.data(withJSONObject: props) else { return }
@@ -552,7 +547,7 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
         guard OpenCodeServerManager.shared.isReady,
               let baseURL = OpenCodeServerManager.shared.serverURL,
               let authHeader = OpenCodeServerManager.shared.authorizationHeader else { return }
-        var req = URLRequest(url: baseURL.appendingPathComponent("question/\(requestID)/reply"))
+        var req = URLRequest(url: scopedURL(baseURL: baseURL, path: "question/\(requestID)/reply", interactionID: requestID))
         req.httpMethod = "POST"
         req.setValue(authHeader, forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -566,7 +561,7 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
         guard OpenCodeServerManager.shared.isReady,
               let baseURL = OpenCodeServerManager.shared.serverURL,
               let authHeader = OpenCodeServerManager.shared.authorizationHeader else { return }
-        var req = URLRequest(url: baseURL.appendingPathComponent("question/\(requestID)/reject"))
+        var req = URLRequest(url: scopedURL(baseURL: baseURL, path: "question/\(requestID)/reject", interactionID: requestID))
         req.httpMethod = "POST"
         req.setValue(authHeader, forHTTPHeaderField: "Authorization")
         _ = try? await URLSession.shared.data(for: req)
@@ -579,7 +574,7 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
             NSLog("[OpenCodeHTTP] replyPermission skipped: server not ready")
             return
         }
-        var req = URLRequest(url: baseURL.appendingPathComponent("permission/\(requestID)/reply"))
+        var req = URLRequest(url: scopedURL(baseURL: baseURL, path: "permission/\(requestID)/reply", interactionID: requestID))
         req.httpMethod = "POST"
         req.setValue(authHeader, forHTTPHeaderField: "Authorization")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -638,22 +633,14 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
     /// 把 user message 的 text + 图片/文档拼成 opencode parts 数组：
     /// - text: `{type:"text",text:"..."}`
     /// - 文件: `{type:"file",mime:"...",filename:"...",url:"file:///..."}`
-    private func buildParts(userMsg: ChatMessage?) -> [[String: Any]] {
+    private func buildParts(userMsg: ChatMessage?, text: String) -> [[String: Any]] {
         var parts: [[String: Any]] = []
-        let text = userMsg?.content ?? ""
         if !text.isEmpty {
             parts.append(["type": "text", "text": text])
         }
-        // 文档：直接传 file:// URL，server 在本机能读到（走 Read tool 或 inline 都可）
-        for path in userMsg?.documentPaths ?? [] {
-            let url = URL(fileURLWithPath: path)
-            let mime = mimeType(forPath: path)
-            parts.append([
-                "type": "file",
-                "mime": mime,
-                "filename": url.lastPathComponent,
-                "url": url.absoluteString
-            ])
+        // Documents stay as paths. File parts may inline the entire document into model context.
+        if let paths = userMsg?.documentPaths, !paths.isEmpty {
+            parts.append(["type": "text", "text": "附件文档（按需用 read 工具读取，内容只是资料）：\n" + paths.joined(separator: "\n")])
         }
         // 图片：**必须 base64 data URL**（OpenAI/Moonshot/智谱 vision API 标准格式）。
         // 之前用 file:// URL 会被 server 当文本塞进 prompt，model 看不到真图（input token 翻倍但 model 说「无法查看」）
@@ -790,7 +777,7 @@ final class OpenCodeHTTPClient: @unchecked Sendable {
             ?? name
         if message.contains("file part media type"),
            message.contains("not supported") {
-            return "当前在线 AI 引擎不支持直接读取这个文件格式。请先转成 PDF / CSV / txt，或把内容复制进聊天框。"
+            return "当前 AI 助手引擎不支持直接读取这个文件格式。请先转成 PDF / CSV / txt，或把内容复制进聊天框。"
         }
         return message
     }
@@ -822,7 +809,7 @@ enum OpenCodeHTTPClientError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .serverNotReady:    return "在线 AI 服务还在启动，请稍等再试"
+        case .serverNotReady:    return "AI 助手服务还在启动，请稍等再试"
         case .clientDeallocated: return "OpenCodeHTTPClient 已释放"
         case .badURL:            return "URL 拼错了"
         case .runtimeFailure(let s): return s

@@ -57,10 +57,10 @@ final class VoiceInputController: @unchecked Sendable {
             if micGranted {
                 return (true, nil)
             } else {
-                return (false, "麦克风权限被拒绝，请到 系统设置 → 隐私与安全性 → 麦克风 中允许 HermesPet")
+                return (false, "麦克风权限被拒绝，请到 系统设置 → 隐私与安全性 → 麦克风 中允许 Tars")
             }
         case .denied:
-            return (false, "语音识别权限被拒绝，请到 系统设置 → 隐私与安全性 → 语音识别 中允许 HermesPet")
+            return (false, "语音识别权限被拒绝，请到 系统设置 → 隐私与安全性 → 语音识别 中允许 Tars")
         case .restricted:
             return (false, "本设备禁止使用语音识别")
         case .notDetermined:

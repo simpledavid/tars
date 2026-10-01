@@ -25,8 +25,8 @@ final class CrashReporter {
     /// 扫描中
     private(set) var isScanning = false
 
-    private static let owner = "basionwang-bot"
-    private static let repo = "HermesPet"
+    private static let owner = "simpledavid"
+    private static let repo = "opencrab"
 
     private init() {}
 
@@ -49,7 +49,8 @@ final class CrashReporter {
         }
 
         let hermesFiles = files.filter {
-            ($0.hasPrefix("HermesPet") || $0.hasPrefix("Hermes 桌宠"))
+            ($0.hasPrefix("Tars") || $0.hasPrefix("OpenCrab")
+                || $0.hasPrefix("HermesPet") || $0.hasPrefix("Hermes 桌宠"))
                 && ($0.hasSuffix(".ips") || $0.hasSuffix(".crash"))
         }
 

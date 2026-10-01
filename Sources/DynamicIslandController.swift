@@ -518,18 +518,10 @@ struct DynamicIslandPillView: View {
             // 计数 +1（已结束的工具数）—— 通知本身已按 toolId 去重
             stepEnded += 1
         }
-        // C) 长任务情绪气泡 —— Clawd / CloudPet 都触发，按 mode 切换台词
+        // C) 长任务状态气泡 —— 所有模式统一由 TARS 表达。
         .onChange(of: elapsedSeconds) { _, secs in
-            switch (currentMode, secs) {
-            // Clawd（claudeCode）—— 严肃工程师人设
-            case (.claudeCode, 30):  ClawdBubbleOverlayController.show("等等，快好了…")
-            case (.claudeCode, 90):  ClawdBubbleOverlayController.show("emm，再花点时间")
-            case (.claudeCode, 180): ClawdBubbleOverlayController.show("这个真的有点复杂…")
-            // CloudPet（directAPI）—— 云端 / 飘逸人设
-            case (.directAPI, 30):   ClawdBubbleOverlayController.show("云端有点慢呢…")
-            case (.directAPI, 90):   ClawdBubbleOverlayController.show("这朵云有点大…")
-            case (.directAPI, 180):  ClawdBubbleOverlayController.show("这片云遮了好久…")
-            default: break
+            if let quote = TarsQuotes.progress(at: secs) {
+                TarsBubbleOverlayController.show(quote)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .init("HermesPetTaskFinished"))) { note in
@@ -578,12 +570,8 @@ struct DynamicIslandPillView: View {
                 withAnimation(AnimTok.snappy) {
                     taskStatus = .idle
                 }
-                // 失败 → 按 mode 冒不同人设气泡
-                switch currentMode {
-                case .claudeCode: ClawdBubbleOverlayController.show("糟糕 😵", duration: 2.2)
-                case .directAPI:  ClawdBubbleOverlayController.show("云飘走了 😢", duration: 2.2)
-                default: break   // Hermes / Codex 暂不冒
-                }
+                // 失败或取消时仍保持同一个 TARS 的简洁口吻。
+                TarsBubbleOverlayController.show(TarsQuotes.taskStopped, duration: 2.2)
             }
         }
     }
@@ -668,7 +656,10 @@ struct DynamicIslandPillView: View {
             }
         }
         .onAppear {
-            let hasKey = !(UserDefaults.standard.string(forKey: "apiKey") ?? "").isEmpty
+            let providerID = UserDefaults.standard.string(forKey: "directAPIProviderID") ?? ""
+            let scopedKey = providerID.isEmpty ? "" : (UserDefaults.standard.string(forKey: "directAPIKey.\(providerID)") ?? "")
+            let fallbackKey = UserDefaults.standard.string(forKey: "directAPIKey") ?? ""
+            let hasKey = !(scopedKey.isEmpty ? fallbackKey : scopedKey).isEmpty
             status = hasKey ? .connected : .unknown
         }
     }
@@ -788,7 +779,7 @@ struct DynamicIslandPillView: View {
         VStack(spacing: 0) {
             Color.clear.frame(height: notchHeight)
             HStack(spacing: 8) {
-                ModeSpriteView(mode: currentMode, isWorking: false, size: 18)
+                ModeSpriteView(mode: currentMode, isWorking: false, size: 22)
                 Image(systemName: "checkmark.seal.fill")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.green)
@@ -825,12 +816,12 @@ struct DynamicIslandPillView: View {
         .transition(.opacity.combined(with: .scale(scale: 0.92)))
     }
 
-    /// 工具调用卡片：[Clawd] [verb] [arg] · [M/N 步] · [Xs] + 底部进度条
+    /// 工具调用卡片：[TARS] [verb] [arg] · [M/N 步] · [Xs] + 底部进度条
     private func toolStateCard(_ toolKind: ToolKind) -> some View {
         VStack(spacing: 0) {
             Color.clear.frame(height: notchHeight)
             HStack(spacing: 6) {
-                ModeSpriteView(mode: currentMode, isWorking: true, size: 16)
+                ModeSpriteView(mode: currentMode, isWorking: true, size: 20)
                 HStack(spacing: 4) {
                     Text(toolKind.verb)
                         .font(.system(size: 11, weight: .semibold))
@@ -956,8 +947,8 @@ struct DynamicIslandPillView: View {
                     .fill(status.color)
                     .frame(width: 8, height: 8)
                     .shadow(color: status.color.opacity(0.55), radius: 3)
-                // hover 时 sprite 放大到 22pt（idle 12pt 圆点 → hover 22pt 完整 sprite）
-                ModeSpriteView(mode: currentMode, isWorking: spriteIsWorking, size: 22)
+                // hover 时展示完整 TARS 形态。
+                ModeSpriteView(mode: currentMode, isWorking: spriteIsWorking, size: 26)
                 Text(currentMode.label)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.white)

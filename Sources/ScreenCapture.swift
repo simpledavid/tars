@@ -31,7 +31,7 @@ enum ScreenCapture {
             )
         } catch {
             // 拿不到 content 几乎一定是权限问题
-            NSLog("[HermesPet] SCShareableContent 失败: \(error.localizedDescription)")
+            NSLog("[Tars] SCShareableContent 失败: \(error.localizedDescription)")
             return .needsPermission
         }
 
@@ -69,7 +69,7 @@ enum ScreenCapture {
                 return .failed("PNG 编码失败")
             }
         } catch {
-            NSLog("[HermesPet] SCScreenshotManager 失败: \(error.localizedDescription)")
+            NSLog("[Tars] SCScreenshotManager 失败: \(error.localizedDescription)")
             let msg = error.localizedDescription
             if msg.lowercased().contains("permission")
                 || msg.lowercased().contains("declined")

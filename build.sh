@@ -1,11 +1,12 @@
 #!/bin/bash
-# build.sh — Build HermesPet.app and install it
+# build.sh — Build Tars.app
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 
-APP_NAME="HermesPet"
+APP_NAME="Tars"
+EXECUTABLE_NAME="HermesPet"
 BUNDLE_ID="com.nousresearch.hermespet"
 BUILD_DIR="$SCRIPT_DIR/.build"
 APP_BUNDLE="$SCRIPT_DIR/$APP_NAME.app"
@@ -24,7 +25,7 @@ echo "🏗️  Building $APP_NAME (universal: arm64 + x86_64)..."
 swift build -c release --disable-sandbox --arch arm64 --arch x86_64
 
 echo "📦 Creating .app bundle..."
-BINARY="$BUILD_DIR/apple/Products/Release/$APP_NAME"
+BINARY="$BUILD_DIR/apple/Products/Release/$EXECUTABLE_NAME"
 
 # Clean previous bundle
 rm -rf "$APP_BUNDLE"
@@ -34,7 +35,7 @@ mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 # Copy binary
-cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+cp "$BINARY" "$APP_BUNDLE/Contents/MacOS/$EXECUTABLE_NAME"
 
 # Copy Info.plist and apply app-specific values
 cp "$SCRIPT_DIR/Info.plist" "$APP_BUNDLE/Contents/"
@@ -45,21 +46,51 @@ if [ -f "$SCRIPT_DIR/AppIcon.icns" ]; then
     echo "🎨 已复制 AppIcon.icns"
 fi
 
-# === Bundle opencode binary（在线 AI 引擎）===
+# === Bundle opencode binary（AI 助手引擎）===
 # opencode (MIT, anomalyco/opencode) 是开源 AI coding agent CLI。
-# bundle 进 .app 让在线 AI 模式无需任何外部 CLI 依赖。
+# bundle 进 .app 让 AI 助手模式无需任何外部 CLI 依赖。
 # 本机首次构建会下载 ~33MB zip 到 .opencode-cache/<VERSION>/，
 # 之后反复 build 不重下。OPENCODE_VERSION 锁版本，避免 release 不兼容时炸链路。
 OPENCODE_VERSION="${OPENCODE_VERSION:-v1.15.1}"
-OPENCODE_ARCH="darwin-arm64"   # Phase 1 仅 arm64；universal 见 TODO Phase 2
+OPENCODE_ARCH="darwin-arm64"
 OPENCODE_CACHE_DIR="$SCRIPT_DIR/.opencode-cache/$OPENCODE_VERSION"
 OPENCODE_BINARY="$OPENCODE_CACHE_DIR/opencode"
+
+download_opencode_zip() {
+    local upstream_url="$1"
+    local output="$2"
+    # 国内网络访问 GitHub release asset 经常 HTTP2 framing / timeout。
+    # 默认优先走几个 GitHub 加速代理；全部失败再回官方源。
+    # 可手动覆盖：
+    #   OPENCODE_MIRROR_PREFIXES="https://your.proxy/" ./install.sh
+    local prefixes="${OPENCODE_MIRROR_PREFIXES:-https://ghfast.top/ https://gh-proxy.com/ https://gh.llkk.cc/}"
+    local urls=()
+    local prefix
+    for prefix in $prefixes; do
+        urls+=("${prefix}${upstream_url}")
+    done
+    urls+=("$upstream_url")
+
+    local url
+    for url in "${urls[@]}"; do
+        echo "   ↳ $url"
+        if curl --http1.1 -fL --progress-bar \
+            --connect-timeout 20 --max-time 240 \
+            --retry 3 --retry-delay 2 --retry-all-errors \
+            -o "$output" "$url"; then
+            return 0
+        fi
+        rm -f "$output"
+        echo "   ⚠️  这个源失败，换下一个..."
+    done
+    return 1
+}
 
 if [ ! -f "$OPENCODE_BINARY" ]; then
     echo "📥 下载 opencode $OPENCODE_VERSION ($OPENCODE_ARCH)..."
     mkdir -p "$OPENCODE_CACHE_DIR"
-    OPENCODE_URL="https://github.com/anomalyco/opencode/releases/download/$OPENCODE_VERSION/opencode-$OPENCODE_ARCH.zip"
-    if curl -fL --progress-bar -o "$OPENCODE_CACHE_DIR/opencode.zip" "$OPENCODE_URL"; then
+    OPENCODE_UPSTREAM_URL="https://github.com/anomalyco/opencode/releases/download/$OPENCODE_VERSION/opencode-$OPENCODE_ARCH.zip"
+    if download_opencode_zip "$OPENCODE_UPSTREAM_URL" "$OPENCODE_CACHE_DIR/opencode.zip"; then
         unzip -q -o "$OPENCODE_CACHE_DIR/opencode.zip" -d "$OPENCODE_CACHE_DIR"
         chmod +x "$OPENCODE_BINARY"
         rm "$OPENCODE_CACHE_DIR/opencode.zip"
@@ -128,12 +159,7 @@ echo ""
 echo "⚠️  首次运行可能需要右键 → 打开 来绕过 Gatekeeper"
 echo ""
 echo "启动后的操作:"
-echo "  1. 点击菜单栏 🐇 图标"
+echo "  1. 点击菜单栏 ✦ 图标"
 echo "  2. 点击齿轮 ⚙️ 进入设置"
-echo "  3. 配置 Hermes API 地址和密钥"
+echo "  3. 选择 AI 服务商并填写 API Key"
 echo "  4. 开始聊天!"
-echo ""
-echo "需要 Hermes API Server 正在运行:"
-echo "  hermes config set API_SERVER_ENABLED true"
-echo "  hermes config set API_SERVER_KEY your-secret-key"
-echo "  hermes gateway"

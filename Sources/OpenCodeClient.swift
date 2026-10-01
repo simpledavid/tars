@@ -1,6 +1,6 @@
 import Foundation
 
-/// **在线 AI（directAPI mode）的客户端**，走 bundled opencode agent runtime。
+/// **AI 助手（directAPI mode）的客户端**，走 bundled opencode agent runtime。
 ///
 /// 架构：通过 `opencode run --attach <serverURL> --format json` 连接
 /// `OpenCodeServerManager` 起的 headless server，每个 HermesPet 对话
@@ -99,7 +99,12 @@ final class OpenCodeClient: @unchecked Sendable {
             at: URL(fileURLWithPath: dir),
             withIntermediateDirectories: true
         )
-        OpenCodeConfigGenerator.ensureConfig(in: dir)
+        do {
+            try OpenCodeConfigGenerator.ensureConfig(in: dir)
+        } catch {
+            continuation.finish(throwing: error)
+            return
+        }
 
         // 3. 拼 prompt + 收集附件（最后一条 user message 的 images / documentPaths）
         let userMsg = messages.last(where: { $0.role == .user })
@@ -290,7 +295,7 @@ final class OpenCodeClient: @unchecked Sendable {
                 NotificationCenter.default.post(
                     name: .init("HermesPetTaskFinished"),
                     object: nil,
-                    userInfo: ["success": success]
+                    userInfo: ["success": success, "playSound": false]
                 )
             }
         }
@@ -525,7 +530,7 @@ enum OpenCodeClientError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .serverNotReady:    return "opencode server 还没准备好，请稍后重试"
-        case .binaryMissing:     return "找不到 opencode 二进制，请重新安装 HermesPet"
+        case .binaryMissing:     return "找不到 opencode 二进制，请重新安装 Tars"
         case .clientDeallocated: return "OpenCodeClient 已释放"
         case .runtimeFailure(let detail): return detail
         }

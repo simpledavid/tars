@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 /// 设置面板 —— macOS Sonoma 系统设置风格：
 /// - 左侧 156pt 侧栏分类列表
 /// - 右侧 ScrollView 详情区，分类标题 + 内容卡片
-/// - 5 类：AI 后端 / 桌宠 / 音效 / 系统 / 关于
+/// - 5 类：AI 助手 / 桌宠 / 音效 / 系统 / 关于
 struct SettingsView: View {
     @Bindable var viewModel: ChatViewModel
 
@@ -28,12 +28,14 @@ struct SettingsView: View {
     @State private var paletteStore = PetPaletteStore.shared
 
     enum Category: String, CaseIterable, Identifiable {
-        case backend, pet, sound, privacy, system, about
+        case backend, agent, advanced, pet, sound, privacy, system, about
         var id: String { rawValue }
 
         var label: String {
             switch self {
-            case .backend: return "AI 后端"
+            case .backend: return "AI 助手"
+            case .agent:   return "Agent 能力"
+            case .advanced: return "高级"
             case .pet:     return "桌宠"
             case .sound:   return "音效"
             case .privacy: return "隐私"
@@ -44,6 +46,8 @@ struct SettingsView: View {
         var icon: String {
             switch self {
             case .backend: return "cpu"
+            case .agent:   return "square.stack.3d.up"
+            case .advanced: return "slider.horizontal.3"
             case .pet:     return "pawprint.fill"
             case .sound:   return "speaker.wave.2.fill"
             case .privacy: return "lock.shield.fill"
@@ -54,6 +58,8 @@ struct SettingsView: View {
         var color: Color {
             switch self {
             case .backend: return .blue
+            case .agent:   return .cyan
+            case .advanced: return .gray
             case .pet:     return .pink
             case .sound:   return .orange
             case .privacy: return .indigo
@@ -123,6 +129,8 @@ struct SettingsView: View {
                 Group {
                     switch selectedCategory {
                     case .backend: backendSection
+                    case .agent:   AgentSettingsView(viewModel: viewModel)
+                    case .advanced: advancedSection
                     case .pet:     petSection
                     case .sound:   soundSection
                     case .privacy: privacySection
@@ -139,46 +147,34 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - AI 后端
+    // MARK: - AI 助手
 
     private var backendSection: some View {
         VStack(alignment: .leading, spacing: 18) {
-            // 配置查看器：选哪个 mode 就显示哪个 mode 的配置项（不切换正在进行的对话）
-            VStack(alignment: .leading, spacing: 8) {
-                Text("查看配置")
-                    .font(.system(size: 13, weight: .medium))
-                Picker(selection: $configViewingMode) {
-                    ForEach(AgentMode.allCases) { mode in
-                        Label(mode.label, systemImage: mode.iconName).tag(mode)
-                    }
-                } label: { EmptyView() }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                Text(modeFooterText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                // 提示用户「这里不切换对话 mode」
-                Text("提示：每个对话独立绑定 mode，发出第一条消息后就锁定。如需用其他模型，按 ⌘N 新建对话。")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .padding(.top, 2)
-                    .fixedSize(horizontal: false, vertical: true)
+            Picker("助手引擎", selection: $viewModel.onlineAIAgent) {
+                ForEach(OnlineAIAgent.selectableCases) { agent in
+                    Text(agent.label).tag(agent)
+                }
             }
-
-            Divider()
-
-            // 选中的 mode 的配置项
-            switch configViewingMode {
-            case .directAPI:  directAPIConfig
-            case .claudeCode: claudeCard
-            case .codex:      codexCard
+            .labelsHidden().pickerStyle(.segmented)
+            .disabled(viewModel.hasAgentWork)
+            Text(viewModel.onlineAIAgent.caption).font(.caption).foregroundStyle(.secondary)
+            Text("引擎选择用于新对话；已有对话继续使用原引擎。")
+                .font(.caption2).foregroundStyle(.secondary)
+            if viewModel.onlineAIAgent == .agentsAPI {
+                AgentsAPISettingsView(viewModel: viewModel)
+            } else {
+                directAPIConfig.disabled(viewModel.hasAgentWork)
+            }
+            if viewModel.hasAgentWork {
+                Text("任务进行中，完成或取消后可修改配置。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
         }
-        // 进入设置时把"查看配置"默认设到当前对话的 mode，方便用户直接编辑当前在用的那个
         .onAppear {
-            configViewingMode = viewModel.agentMode
-            // 反查"在线 AI"当前是哪个预设
+            configViewingMode = .directAPI
+            guard !viewModel.hasAgentWork else { return }
+            // 反查"AI 助手"当前是哪个预设
             selectedProvider = ProviderPreset.detect(baseURL: viewModel.directAPIBaseURL)
             if selectedProvider.id != "custom" {
                 UserDefaults.standard.set(selectedProvider.id, forKey: "directAPIProviderID")
@@ -192,42 +188,40 @@ struct SettingsView: View {
         }
     }
 
-    /// 当前选中的服务商预设（仅给「在线 AI」配置区用）。
+    private var advancedSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Toggle("启用 Claude Code / Codex CLI 入口", isOn: $viewModel.advancedCLIEnabled)
+            Text("适合已经安装并登录这些工具的用户。它们使用本机账号，与 AI 助手的 API Key 分开配置。")
+                .font(.caption).foregroundStyle(.secondary)
+            claudeCard
+            codexCard
+            if viewModel.advancedCLIEnabled {
+                HStack {
+                    Button("新建 Claude Code 对话") { viewModel.newConversation(mode: .claudeCode) }
+                    Button("新建 Codex 对话") { viewModel.newConversation(mode: .codex) }
+                }.font(.caption)
+            }
+        }.disabled(viewModel.hasAgentWork)
+    }
+
+    /// 当前选中的服务商预设（仅给「AI 助手」配置区用）。
     /// 初值在 .onAppear 里根据 viewModel.directAPIBaseURL 反查赋值
     @State private var selectedProvider: ProviderPreset = ProviderPreset.all[0]
 
-    // MARK: - 在线 AI 配置（直连第三方 OpenAI 兼容服务商）
+    // MARK: - AI 助手配置
 
     private var directAPIConfig: some View {
         VStack(alignment: .leading, spacing: 14) {
-            // 顶部一行说明，告诉用户这就是"只用 API Key"的简单模式
             HStack(spacing: 6) {
                 Image(systemName: "sparkles")
                     .font(.system(size: 11))
                     .foregroundStyle(.indigo)
-                Text("选一家服务商 + 填 API Key 就能聊，不依赖任何本地命令行工具")
+                Text("配置 opencode 的服务商、模型与 API Key")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            settingRow("Agent") {
-                VStack(alignment: .leading, spacing: 6) {
-                    Picker(selection: $viewModel.onlineAIAgent) {
-                        ForEach(OnlineAIAgent.allCases) { agent in
-                            Text(agent.label).tag(agent)
-                        }
-                    } label: { EmptyView() }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-
-                    Text(viewModel.onlineAIAgent.caption)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            onlineAgentCard
+            sectionTitle("模型驱动")
 
             // 服务商预设 Picker
             settingRow("服务商") {
@@ -306,19 +300,23 @@ struct SettingsView: View {
                 }
             }
 
-            testConnectionRow
-
-            // 底部提示：服务商注册入口 + 备选模型
             providerHint
+
+            Divider()
+
+            onlineAgentCard
+
+            testConnectionRow
         }
     }
 
-    /// 应用预设到「在线 AI」配置：写入 baseURL + 按当前回复偏好映射模型。
+    /// 应用预设到「AI 助手」配置：写入 baseURL + 按当前回复偏好映射模型。
     /// 预设模式不让用户手填模型名，避免“选了服务商但模型/API 地址没真正写入”的错觉。
     private func applyProviderPreset(_ preset: ProviderPreset) {
         guard preset.id != "custom" else {
             UserDefaults.standard.set(preset.id, forKey: "directAPIProviderID")
             loadDirectAPIKey(for: preset)
+            ModelDriverConfig.syncFromDefaults()
             return
         }
         UserDefaults.standard.set(preset.id, forKey: "directAPIProviderID")
@@ -327,6 +325,7 @@ struct SettingsView: View {
         }
         loadDirectAPIKey(for: preset)
         syncDirectModelWithPreference(for: preset)
+        ModelDriverConfig.syncFromDefaults()
         testResult = nil
     }
 
@@ -390,7 +389,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             default:
                 if viewModel.directAPIKey.isEmpty {
-                    Text(viewModel.onlineAIAgent == .opencode ? "未配 Key 时使用 opencode 免费模型" : "当前服务商尚未配置 Key")
+                    Text("当前服务商尚未配置 Key")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -413,34 +412,9 @@ struct SettingsView: View {
 
     private var onlineAgentCard: some View {
         let agent = viewModel.onlineAIAgent
-        let tint: Color = {
-            switch agent {
-            case .none:     return .secondary
-            case .opencode: return .indigo
-            case .hermes:   return .green
-            case .openClaw: return .orange
-            }
-        }()
-        let title: String = {
-            switch agent {
-            case .none:     return "默认供应商模型"
-            case .opencode: return "opencode agent runtime"
-            case .hermes:   return "Hermes agent"
-            case .openClaw: return "OpenClaw agent"
-            }
-        }()
-        let body: String = {
-            switch agent {
-            case .none:
-                return "在线 AI 不套 agent，直接向当前服务商模型发 chat/completions。适合稳定聊天、翻译、总结和轻量问答。"
-            case .opencode:
-                return "本地 opencode v1.15.1 接管在线 AI：可读写本地文件、跑命令、联网搜索，并支持权限审批。没配 Key 时可用内置免费模型。"
-            case .hermes:
-                return "Hermes 现在作为在线 AI 的本地 agent，与 opencode 平级。它连接本机 Hermes Gateway，不走服务商直连配置。"
-            case .openClaw:
-                return "OpenClaw 现在作为在线 AI 的本地 agent，与 opencode 平级。它调用本机 openclaw 命令，适合工程执行与代码任务。"
-            }
-        }()
+        let tint: Color = .indigo
+        let title = "opencode agent runtime"
+        let body = "本地 opencode v1.15.1 使用当前服务商 API Key，可读写文件、跑命令、联网搜索，并支持权限审批。"
         let portText: String = {
             if let url = OpenCodeServerManager.shared.serverURL,
                let port = url.port {
@@ -459,25 +433,11 @@ struct SettingsView: View {
                 Spacer()
                 if agent == .opencode {
                     let isReady = OpenCodeServerManager.shared.isReady
+                    let hasKey = !viewModel.directAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     Circle()
-                        .fill(isReady ? .green : .orange)
+                        .fill((isReady && hasKey) ? .green : .orange)
                         .frame(width: 7, height: 7)
-                    Text(isReady ? "运行中\(portText)" : "按需启动")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                } else if agent == .hermes {
-                    Circle()
-                        .fill(viewModel.apiKey.isEmpty ? .orange : .green)
-                        .frame(width: 7, height: 7)
-                    Text(viewModel.apiKey.isEmpty ? "待配置" : "本地 Gateway")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                } else if agent == .openClaw {
-                    let path = UserDefaults.standard.string(forKey: "openClawExecutablePath") ?? ""
-                    Circle()
-                        .fill(path.isEmpty ? .orange : .green)
-                        .frame(width: 7, height: 7)
-                    Text(path.isEmpty ? "未检测到" : "本地 CLI")
+                    Text(!hasKey ? "待配置 Key" : (isReady ? "运行中\(portText)" : "按需启动"))
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
                 }
@@ -486,16 +446,6 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if agent == .opencode && !OpenCodeConfigGenerator.hasConfiguredKey {
-                HStack(spacing: 4) {
-                    Image(systemName: "gift.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.green)
-                    Text("还没配 Key？opencode 会使用内置免费模型 deepseek-v4-flash-free")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
             if agent == .opencode && OpenCodeConfigGenerator.isReasoningModelKnownUnstable {
                 HStack(alignment: .top, spacing: 4) {
                     Image(systemName: "exclamationmark.triangle.fill")
@@ -524,7 +474,7 @@ struct SettingsView: View {
         )
     }
 
-    /// 共用的"测试连接"按钮行 —— Hermes / 在线 AI 都用它，按 configViewingMode 决定测哪一组配置
+    /// 共用的"测试连接"按钮行 —— AI 助手用它校验模型驱动 + 本地 agent。
     private var testConnectionRow: some View {
         HStack(spacing: 10) {
             Spacer().frame(width: 92)
@@ -559,8 +509,8 @@ struct SettingsView: View {
             mode: .claudeCode,
             icon: "terminal.fill",
             tint: .orange,
-            title: "通过 claude CLI 调用 Claude Code",
-            body: "能读写文件、运行命令、分析图片。需要先在终端用 npm / brew 等装好 claude CLI。",
+            title: "Claude",
+            body: "适合读写文件、运行命令、分析图片。需要你已在本机完成 Claude 登录。",
             installURL: "https://docs.claude.com/en/docs/agents-and-tools/claude-code/overview"
         )
     }
@@ -570,13 +520,13 @@ struct SettingsView: View {
             mode: .codex,
             icon: "wand.and.stars",
             tint: .cyan,
-            title: "通过 codex CLI 调用 OpenAI Codex",
-            body: "强项是写代码 + 生成图片。生图自动显示在对话气泡里。需要装好 codex CLI 并用 codex login 登录 OpenAI 账号。",
+            title: "Codex",
+            body: "适合写代码和生成图片。生图会自动显示在对话气泡里。需要你已在本机完成 Codex 登录。",
             installURL: "https://github.com/openai/codex"
         )
     }
 
-    /// CLI 模式（Claude / Codex）的配置卡 —— 说明 + 当前探测到的路径 + 重新检测按钮
+    /// Claude / Codex 的配置卡 —— 说明 + 当前可用状态 + 重新检查按钮
     @ViewBuilder
     private func cliConfigCard(mode: AgentMode,
                                icon: String,
@@ -607,28 +557,28 @@ struct SettingsView: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: 8))
 
-            // 当前检测到的路径 + 重新检测按钮
+            // 当前可用状态 + 重新检查按钮
             cliDetectionRow(mode: mode, tint: tint)
 
-            // 安装指南链接
+            // 配置指南链接
             HStack(spacing: 4) {
                 Image(systemName: "arrow.up.right.square")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
-                Text("还没装？")
+                Text("还没配置？")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Link("安装指南 ›", destination: URL(string: installURL)!)
+                Link("配置指南 ›", destination: URL(string: installURL)!)
                     .font(.caption)
             }
         }
     }
 
-    /// 单行 UI：左侧显示当前检测状态（路径 / "未找到" / "检测中…"），右侧"重新检测"按钮
+    /// 单行 UI：左侧显示当前可用状态，右侧"重新检查"按钮
     @ViewBuilder
     private func cliDetectionRow(mode: AgentMode, tint: Color) -> some View {
         HStack(spacing: 8) {
-            // 当前 UserDefaults 里的路径就是 CLIAvailability 探测后写入的真实路径
+            // 当前 UserDefaults 里的路径就是 CLIAvailability 探测后写入的真实路径；UI 不展示技术路径。
             let key = (mode == .claudeCode) ? "claudeExecutablePath" : "codexExecutablePath"
             let storedPath = UserDefaults.standard.string(forKey: key) ?? ""
 
@@ -637,20 +587,18 @@ struct SettingsView: View {
                 .foregroundStyle(storedPath.isEmpty ? Color.secondary : Color.green)
 
             if cliDetectingMode == mode {
-                Text("检测中…")
-                    .font(.system(size: 11, design: .monospaced))
+                Text("检查中…")
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 ProgressView().controlSize(.small).scaleEffect(0.6)
             } else if storedPath.isEmpty {
-                Text("未检测到")
+                Text("未就绪")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             } else {
-                Text(storedPath)
-                    .font(.system(size: 10, design: .monospaced))
+                Text("已就绪")
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
             }
 
             Spacer()
@@ -660,7 +608,7 @@ struct SettingsView: View {
             } label: {
                 HStack(spacing: 3) {
                     Image(systemName: "arrow.clockwise")
-                    Text("重新检测")
+                    Text("重新检查")
                 }
             }
             .controlSize(.small)
@@ -674,7 +622,7 @@ struct SettingsView: View {
         )
     }
 
-    /// 当前正在检测哪个 mode 的 CLI（用于按钮 disable / "检测中…"显示）
+    /// 当前正在检查哪个 mode（用于按钮 disable / "检查中…"显示）
     @State private var cliDetectingMode: AgentMode?
 
     private func redetectCLI(mode: AgentMode) {
@@ -694,7 +642,7 @@ struct SettingsView: View {
 
             cliDetectingMode = nil
             if found {
-                viewModel.checkConnection()  // 重新检测连接 → 状态点变绿
+                viewModel.checkConnection()  // 重新检查连接 → 状态点变绿
             }
         }
     }
@@ -740,11 +688,10 @@ struct SettingsView: View {
 
             Divider()
 
-            // 桌面漫步统一区 —— 覆盖四种桌宠（每个 mode 一种形象）
             VStack(alignment: .leading, spacing: 6) {
                 Label("桌面漫步", systemImage: "figure.walk")
                     .font(.system(size: 13, weight: .medium))
-                Text("从灵动岛跳出，沿菜单栏正下方左右走动。Claude 🦞 / 在线 AI ☁️ / Hermes 🐴 / Codex 💻 各有专属桌宠。")
+                Text("TARS 从灵动岛展开，沿菜单栏正下方机械行走。切换 AI 模式不会更换角色。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
@@ -753,26 +700,26 @@ struct SettingsView: View {
                 icon: "figure.walk",
                 iconColor: petColor,
                 title: "启用桌面漫步",
-                caption: "总开关。关掉后四种桌宠都不会出现",
-                isOn: $viewModel.clawdWalkEnabled
+                caption: "总开关。关闭后 TARS 不再离开灵动岛",
+                isOn: $viewModel.tarsWalkEnabled
             )
 
             captionToggle(
                 icon: "infinity",
                 iconColor: petColor,
-                title: "Claude / Hermes / Codex · 自由活动",
-                caption: "Claude / Hermes / Codex 模式下跳过 3 分钟 idle 等待，桌宠一直在屏幕上玩。在线 AI 切过去时云朵默认立刻出来，不受此项影响",
-                isOn: $viewModel.clawdFreeRoamEnabled,
-                disabled: !viewModel.clawdWalkEnabled
+                title: "自由活动",
+                caption: "跳过 3 分钟空闲等待，让 TARS 在任意 AI 模式下都能出来巡视",
+                isOn: $viewModel.tarsFreeRoamEnabled,
+                disabled: !viewModel.tarsWalkEnabled
             )
 
             captionToggle(
                 icon: "sparkles.rectangle.stack",
                 iconColor: petColor,
                 title: "桌面巡视（嗅文件）",
-                caption: "漫步期间偶尔下到桌面，挑个图标用 Hermes 给一句短评。四种桌宠都会参与，需要 Finder 自动化权限",
-                isOn: $viewModel.clawdDesktopPatrolEnabled,
-                disabled: !viewModel.clawdWalkEnabled
+                caption: "漫步期间偶尔下到桌面，挑个图标让 AI 给一句短评，需要 Finder 自动化权限",
+                isOn: $viewModel.tarsDesktopPatrolEnabled,
+                disabled: !viewModel.tarsWalkEnabled
             )
 
             Divider()
@@ -781,11 +728,11 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 10) {
                 Label("桌宠形象调色", systemImage: "paintpalette.fill")
                     .font(.system(size: 13, weight: .medium))
-                Text("调主色 → 顶高光 / 底阴影自动派生。鬃毛 / 翅膀 / 火焰 / LED 等保留默认色不变。")
+                Text("调整 TARS 信息屏与状态灯颜色，机体保持黑银金属质感。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
 
-                paletteRow(label: "Clawd 🦞", mode: .claudeCode)
+                paletteRow(label: "TARS", mode: .claudeCode)
             }
             .padding(12)
             .background(Color.secondary.opacity(0.06))
@@ -811,7 +758,7 @@ struct SettingsView: View {
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .onChange(of: petWalkSizeScale) { _, _ in
-                    // 通知 ClawdWalkController：已显示中的桌宠 setFrame 跟随新尺寸
+                    // 通知 TarsWalkController：已显示中的桌宠 setFrame 跟随新尺寸
                     NotificationCenter.default.post(name: PetWalkSizeScale.didChangeNotification, object: nil)
                 }
 
@@ -827,12 +774,12 @@ struct SettingsView: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 8) {
-                Label("交互（四种桌宠通用）", systemImage: "hand.tap")
+                Label("TARS 交互", systemImage: "hand.tap")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.secondary)
                 interactionTip("单击 / 双击", "打开聊天窗（不切换模式）")
                 interactionTip("鼠标 hover", "暂停漫步")
-                interactionTip("拖文件给它", "桌宠吃掉并交给 AI 看（仅 Claude 模式）")
+                interactionTip("拖文件给它", "TARS 扫描并交给当前 AI 处理")
             }
             .padding(12)
             .background(Color.secondary.opacity(0.06))
@@ -1060,13 +1007,13 @@ struct SettingsView: View {
 
     private var privacySection: some View {
         VStack(alignment: .leading, spacing: 14) {
-            // 在线 AI 工具调用前是否要用户审批 —— 默认关（行为同 v1.2.x），开了之后
+            // AI 助手工具调用前是否要用户审批 —— 默认关（行为同 v1.2.x），开了之后
             // 灵动岛会在 AI 想跑 Edit/Write/Bash 等工具时弹卡片让 Allow/Always/Deny
             captionToggle(
                 icon: "checkmark.shield.fill",
                 iconColor: .orange,
                 title: "工具调用前向我确认",
-                caption: "AI 想读写文件 / 跑命令时，灵动岛展开卡片让你点 Allow / Always / Deny。\n默认关（AI 全部放行）；开启后下一次新对话生效。仅「在线 AI」模式生效（v1.3）。",
+                caption: "AI 想读写文件 / 跑命令时，灵动岛展开卡片让你点 Allow / Always / Deny。\n默认关（AI 全部放行）；开启后下一次新对话生效。仅「AI 助手」模式生效（v1.3）。",
                 isOn: $viewModel.permissionUIEnabled
             )
 
@@ -1103,14 +1050,14 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Picker("", selection: $viewModel.morningBriefingBackend) {
-                        ForEach(AgentMode.allCases) { mode in
+                        ForEach(AgentMode.allCases.filter { $0 == .directAPI || viewModel.advancedCLIEnabled || $0 == viewModel.morningBriefingBackend }) { mode in
                             Text(mode.label).tag(mode)
                         }
                     }
                     .pickerStyle(.menu)
                     .frame(width: 140)
                 }
-                Text("早报会把你昨天的活动摘要发给这个 AI 总结。Hermes 模式可走自托管，最隐私；Claude/Codex 智能更强但数据会过它们的服务器。")
+                Text("早报会把昨天的活动摘要发给所选 AI。AI 助手使用当前选定的 Agents API 或 opencode 服务商。")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1271,7 +1218,7 @@ struct SettingsView: View {
                 icon: "dock.rectangle",
                 iconColor: .indigo,
                 title: "在 Dock 显示图标",
-                caption: "默认菜单栏 agent 风格不占 Dock。打开后会显示应用图标，Cmd+Tab 也能切到 HermesPet。切换即时生效，无需重启。",
+                caption: "默认菜单栏 agent 风格不占 Dock。打开后会显示应用图标，Cmd+Tab 也能切到 Tars。切换即时生效，无需重启。",
                 isOn: $viewModel.showDockIcon
             )
 
@@ -1302,7 +1249,7 @@ struct SettingsView: View {
                 icon: "rectangle.3.group",
                 iconColor: .pink,
                 title: "画布模式",
-                caption: "用 Codex 自动批量生成产品图集（电商主图风格）。生成需 5~10 分钟，依赖 codex CLI。功能仍在打磨，不需要可保持关闭。",
+                caption: "用 Codex 自动批量生成产品图集（电商主图风格）。生成需 5~10 分钟，需要 Codex 已就绪。功能仍在打磨，不需要可保持关闭。",
                 isOn: $canvasModeEnabled
             )
         }
@@ -1342,7 +1289,7 @@ struct SettingsView: View {
                         )
                 }
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("HermesPet").font(.system(size: 16, weight: .semibold))
+                    Text("Tars").font(.system(size: 16, weight: .semibold))
                     Text("v\(UpdateChecker.shared.currentVersion)")
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -1494,7 +1441,7 @@ struct SettingsView: View {
                     }
                     .font(.system(size: 11, weight: .medium))
                     Link("查看全部贡献者",
-                         destination: URL(string: "https://github.com/basionwang-bot/HermesPet/graphs/contributors")!)
+                         destination: URL(string: "https://github.com/simpledavid/opencrab/graphs/contributors")!)
                         .font(.system(size: 10))
                         .foregroundStyle(.secondary)
                 }
@@ -1507,7 +1454,7 @@ struct SettingsView: View {
                 Text("代码仓库")
                     .font(.system(size: 12))
                 Spacer()
-                Link("GitHub", destination: URL(string: "https://github.com/basionwang-bot/HermesPet")!)
+                Link("GitHub", destination: URL(string: "https://github.com/simpledavid/opencrab")!)
                     .font(.system(size: 12))
             }
 
@@ -1650,6 +1597,12 @@ struct SettingsView: View {
 
     // MARK: - 通用工具
 
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.primary)
+    }
+
     private func settingRow(_ title: String, @ViewBuilder content: () -> some View) -> some View {
         HStack(alignment: .center, spacing: 12) {
             Text(title)
@@ -1682,72 +1635,30 @@ struct SettingsView: View {
     private var modeFooterText: String {
         switch configViewingMode {
         case .directAPI:
-            return "不选 agent 时直连第三方模型；opencode / Hermes / OpenClaw 都走本地 agent"
+            return "opencode 使用这里配置的服务商模型与 API Key"
         case .claudeCode:
-            return "通过本地 claude 命令调用 Claude Code Agent，支持文件读写与命令执行"
+            return "Claude 已登录后可读写文件、运行命令、分析图片"
         case .codex:
-            return "通过本地 codex 命令调用 OpenAI Codex Agent，擅长写代码 + 生成图片"
+            return "Codex 已登录后可写代码、运行命令、生成图片"
         }
     }
 
-    /// 测试连接 —— 按当前查看的 configViewingMode 决定测哪一组配置。
-    /// Hermes 走 /health；在线 AI 必须真实发一条 chat/completions ping，
-    /// 这样才能校验 API Key 是否属于当前服务商、模型是否可用。
+    /// opencode provider validation; the explicit test button invokes a small model request.
     private func testConnection() {
         testing = true
         testResult = nil
-        let source: APIClient.ConfigSource = .direct
-        let client = APIClient(source: source)
         Task {
-            if source == .direct {
-                if viewModel.onlineAIAgent == .opencode,
-                   viewModel.directAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    let ok = OpenCodeServerManager.shared.isReady
-                    testResult = (ok, ok ? "opencode 免费模型可用" : "opencode 引擎尚未启动")
-                } else if viewModel.onlineAIAgent == .hermes {
-                    let hermes = APIClient(source: .hermes)
-                    do {
-                        let ok = try await hermes.checkHealth()
-                        testResult = (ok, ok ? "Hermes 本地 agent 在线" : "Hermes 健康检查未通过")
-                    } catch {
-                        testResult = (false, error.localizedDescription)
-                    }
-                } else if viewModel.onlineAIAgent == .openClaw {
-                    let ok = await CLIAvailability.openClawAvailable()
-                    testResult = (ok, ok ? "OpenClaw 本地 CLI 可用" : "未检测到 openclaw 命令")
-                } else if viewModel.directAPIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    testResult = (false, "请先选择服务商")
-                } else if viewModel.directAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    testResult = (false, "请先填写 API Key")
-                } else if viewModel.directAPIModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    testResult = (false, "请先选择模型")
-                } else {
-                    do {
-                        _ = try await client.sendMessage(messages: [
-                            ChatMessage(role: .user, content: "ping")
-                        ], onlineAgent: viewModel.onlineAIAgent)
-                        testResult = (true, "Key 与模型可用")
-                    } catch {
-                        testResult = (false, directTestErrorMessage(error))
-                    }
+            do {
+                guard !viewModel.directAPIBaseURL.isEmpty, !viewModel.directAPIKey.isEmpty,
+                      !viewModel.directAPIModel.isEmpty else {
+                    throw AgentHarnessError.configuration("请先配置服务商、模型和 API Key")
                 }
-            } else {
-                do {
-                    let ok = try await client.checkHealth()
-                    testResult = (ok, ok ? "Hermes API 在线" : "健康检查未通过")
-                } catch {
-                    // 健康检查不通 → 退一步发一条 ping 试试。有些自部署的 Hermes /health 没开
-                    do {
-                        _ = try await client.sendMessage(messages: [
-                            ChatMessage(role: .user, content: "ping")
-                        ])
-                        testResult = (true, "连接成功")
-                    } catch {
-                        testResult = (false, error.localizedDescription)
-                    }
-                }
-            }
+                if !OpenCodeServerManager.shared.isReady { try await OpenCodeServerManager.shared.start() }
+                _ = try await APIClient(source: .direct).sendMessage(messages: [ChatMessage(role: .user, content: "ping")])
+                testResult = (true, "Key 与模型可用")
+            } catch { testResult = (false, directTestErrorMessage(error)) }
             testing = false
+            viewModel.checkConnection()
         }
     }
 
