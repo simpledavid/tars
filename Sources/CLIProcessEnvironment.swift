@@ -38,6 +38,11 @@ enum CLIProcessEnvironment {
             }
         }
 
+        // Let all Tars agent drivers use the same pinned WeChat tools as the UI.
+        if let bundled = Bundle.main.executableURL?.deletingLastPathComponent(),
+           FileManager.default.isExecutableFile(atPath: bundled.appending(path: "greenbubbles").path) {
+            appendDir(bundled.path)
+        }
         appendPathList(existing)
         appendPathList(UserDefaults.standard.string(forKey: "cliLoginShellPATH"))
 

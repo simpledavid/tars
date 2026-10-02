@@ -44,6 +44,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private var responseSummaryController: ResponseSummaryWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // A separate preview session uses synthetic records and does not start
+        // the pet, AI runtimes, update checks, or the user's existing sessions.
+        if CommandLine.arguments.contains("--wechat-preview") {
+            NSApp.setActivationPolicy(.regular)
+            KnowledgeWindowController.shared.showLibrary()
+            return
+        }
         // 配置迁移：把老版本的 UserDefaults 字段升级到当前 schema。
         // 必须在任何读 UserDefaults 的代码（ChatViewModel / OpenCodeConfigGenerator 等）之前跑，
         // 否则它们会读到旧 key 拿不到值。同步执行（UserDefaults 操作极快，不阻塞启动）。
@@ -313,12 +320,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     /// 在菜单栏图标下方弹出菜单（用完即清，避免左键也被劫持）
+    @objc private func menuOpenKnowledge() {
+        KnowledgeWindowController.shared.showLibrary(viewModel: viewModel)
+    }
+
     private func showStatusMenu() {
         let menu = NSMenu()
 
         let openItem = NSMenuItem(title: "打开 / 关闭聊天", action: #selector(toggleFromMenuBar), keyEquivalent: "")
         openItem.target = self
         menu.addItem(openItem)
+
+        let knowledgeItem = NSMenuItem(title: "微信知识库与备份", action: #selector(menuOpenKnowledge), keyEquivalent: "")
+        knowledgeItem.target = self
+        menu.addItem(knowledgeItem)
 
         let captureItem = NSMenuItem(title: "截屏并附加", action: #selector(menuCaptureScreen), keyEquivalent: "")
         captureItem.target = self

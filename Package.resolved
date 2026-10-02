@@ -1,0 +1,14 @@
+{
+  "originHash" : "b1d7ed349b96b49d97f7dd448551e00534f9ca20a1c400b84901b6479277324b",
+  "pins" : [
+    {
+      "identity" : "greenbubbles",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/simpledavid/greenbubbles.git",
+      "state" : {
+        "revision" : "f3fab5ae0bc3fce20bc813569f2fac770081d9c7"
+      }
+    }
+  ],
+  "version" : 3
+}
