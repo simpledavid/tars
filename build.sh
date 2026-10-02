@@ -108,6 +108,8 @@ if [ -f "$OPENCODE_BINARY" ]; then
 fi
 
 # Create PkgInfo
+"$SCRIPT_DIR/scripts/bundle-greenbubbles.sh" "$APP_BUNDLE"
+
 echo "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"
 
 # 清理扩展属性（防止 codesign 报 "resource fork / Finder information not allowed"）

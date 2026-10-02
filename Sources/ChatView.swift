@@ -262,6 +262,10 @@ struct ChatView: View {
                 viewModel.chatWindowAlwaysOnTop.toggle()
             }
 
+            HeaderIconButton(systemName: "books.vertical", help: "微信知识库与备份") {
+                KnowledgeWindowController.shared.showLibrary(viewModel: viewModel)
+            }
+
             HeaderIconButton(systemName: "gearshape.fill", help: "设置") {
                 viewModel.showSettings.toggle()
             }
